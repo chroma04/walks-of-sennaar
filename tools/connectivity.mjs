@@ -8,7 +8,7 @@ import { BLOCK, BLOCK_SIZE, CELL, K_BUILDING } from '../src/config.js';
 import { RADIUS } from '../src/player/Player.js';
 
 globalThis.navigator ??= { hardwareConcurrency: 1 };
-const seed = +(process.argv[2] ?? 0x5e22a4);
+const seed = +(process.argv[2] ?? 8);
 const R = +(process.argv[3] ?? 1);
 const cx = +(process.argv[4] ?? 0);
 const cz = +(process.argv[5] ?? 0);
@@ -99,29 +99,22 @@ for (let bz = cz - R; bz <= cz + R; bz++) {
       totalCells++;
       const ci = c % BLOCK;
       const cj = Math.floor(c / BLOCK);
-      let any = false;
-      for (let oz = 0; oz < 4 && !any; oz++) {
-        for (let ox = 0; ox < 4 && !any; ox++) {
-          const i = Math.round((bx * BLOCK_SIZE + ci * CELL + 0.25 + ox * STEP - x0) / STEP);
-          const j = Math.round((bz * BLOCK_SIZE + cj * CELL + 0.25 + oz * STEP - z0) / STEP);
-          if (i >= 0 && j >= 0 && i < n && j < n && seen[idx(i, j)]) any = true;
+      // lattice nodes strictly inside this cell
+      const nodes = [];
+      for (let oz = 1; oz < 4; oz++) {
+        for (let ox = 1; ox < 4; ox++) {
+          const i = Math.round((bx * BLOCK_SIZE + ci * CELL + ox * STEP - x0) / STEP);
+          const j = Math.round((bz * BLOCK_SIZE + cj * CELL + oz * STEP - z0) / STEP);
+          nodes.push([i, j]);
         }
       }
-      if (!any) {
-        missingCells++;
-        // a pocket is a cell with standable ground that the flood never entered
-        let standable = false;
-        for (let oz = 0; oz < 4 && !standable; oz++) {
-          for (let ox = 0; ox < 4 && !standable; ox++) {
-            const x = bx * BLOCK_SIZE + ci * CELL + 0.25 + ox * STEP;
-            const z = bz * BLOCK_SIZE + cj * CELL + 0.25 + oz * STEP;
-            if (!Number.isNaN(world.standAt(x, z, RADIUS))) standable = true;
-          }
-        }
-        if (standable) {
-          pockets++;
-          if (process.env.DEBUG && pockets <= 12) console.log('pocket', bx, bz, 'cell', ci, cj, 'kind', T.kind[c], 'used', T.used[c]);
-        }
+      if (nodes.some(([i, j]) => seen[idx(i, j)])) continue;
+      missingCells++;
+      // a pocket: ground the traveller could stand on that the flood never entered
+      const standable = nodes.some(([i, j]) => !Number.isNaN(world.standAt(x0 + i * STEP, z0 + j * STEP, RADIUS)));
+      if (standable) {
+        pockets++;
+        if (process.env.DEBUG && pockets <= 12) console.log('pocket', bx, bz, 'cell', ci, cj, 'kind', T.kind[c], 'used', T.used[c]);
       }
     }
   }

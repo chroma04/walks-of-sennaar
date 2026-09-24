@@ -37,7 +37,7 @@ export class Renderer {
     this.staticMatrix = new THREE.Matrix4();
     this.dynMatrix = new THREE.Matrix4();
 
-    this.samples = 4;
+    this.samples = 0;
     this.mainRT = this.makeMain(1, 1);
 
     const pal = [];
@@ -130,6 +130,17 @@ export class Renderer {
     this.r.setSize(w, h, true);
     const bw = Math.max(1, Math.floor(w * dpr));
     const bh = Math.max(1, Math.floor(h * dpr));
+    // multisampling only where pixels are big; dense displays don't need it
+    const samples = dpr >= 1.75 ? 0 : 4;
+    if (samples !== this.samples) {
+      this.samples = samples;
+      this.mainRT.depthTexture?.dispose();
+      this.mainRT.dispose();
+      this.mainRT = this.makeMain(bw, bh);
+      this.post.uniforms.tColor.value = this.mainRT.textures[0];
+      this.post.uniforms.tNormal.value = this.mainRT.textures[1];
+      this.post.uniforms.tDepth.value = this.mainRT.depthTexture;
+    }
     this.mainRT.setSize(bw, bh);
     this.uniforms.uResolution.value.set(bw, bh);
     this.post.uniforms.uTexel.value.set(1 / bw, 1 / bh);

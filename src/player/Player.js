@@ -43,8 +43,9 @@ function buildBody() {
   // sash and satchel
   b.m = M.CREAM;
   b.lathe([[0.258, 0.9], [0.268, 0.95], [0.262, 1.0]], 14);
-  b.withTransform(T.chain(T.rotY(0.6), T.rotZ(0.5)), () => {
-    b.box(-0.03, 0.92, 0.2, 0.03, 1.45, 0.25, 0b010111);
+  // strap across the chest, pivoting round the torso
+  b.withTransform(T.chain(T.translate(0, 1.12, 0), T.rotZ(0.62), T.scale(1, 0.32, 1)), () => {
+    b.lathe([[0.262, -0.1], [0.272, 0.0], [0.262, 0.1]], 14);
   });
   b.m = M.GLYPH;
   b.box(0.22, 0.72, -0.1, 0.33, 0.95, 0.12, 0b111111);
@@ -57,7 +58,7 @@ function buildArm() {
   const b = new GeoBuilder(512);
   b.m = M.ROBE;
   // hangs from the origin (shoulder) downwards
-  b.lathe([[0.0, 0.02], [0.075, 0.0], [0.085, -0.25], [0.1, -0.52], [0.0, -0.58]], 8);
+  b.lathe([[0.0, -0.58], [0.1, -0.52], [0.085, -0.25], [0.075, 0.0], [0.0, 0.03]], 8);
   b.m = M.MASK;
   ellipsoid(b, 0, -0.6, 0.02, 0.05, 0.06, 0.05, 8);
   return b.freeze();

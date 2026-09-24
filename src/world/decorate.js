@@ -257,6 +257,36 @@ function decorateTerrace(ctx, P) {
     }
   }
 
+  // Big plazas get a scatter of potted palms, urns and benches.
+  if (program !== 'cloister' && P.reachable && area >= 42) {
+    const want = Math.floor(area / 36) + (rng() < 0.5 ? 1 : 0);
+    let placed = 0;
+    for (let tries = 0; tries < want * 6 && placed < want; tries++) {
+      const i = P.x0 + 1 + Math.floor(rng() * (P.w - 2));
+      const j = P.z0 + 1 + Math.floor(rng() * (P.d - 2));
+      if (ctx.used[j * N + i] !== 0 || regionUsed(ctx, i - 1, j - 1, i + 2, j + 2, true)) continue;
+      const x = (i + 0.5) * CELL;
+      const z = (j + 0.5) * CELL;
+      const r = rng();
+      if (r < 0.45) {
+        out.feats.push({ t: 'palm', x, z, y, pot: true, s: 0.8 + rng() * 0.4, seed: rng() * 1e6 });
+        out.circles.push([x, z, 0.5, y]);
+      } else if (r < 0.7) {
+        out.feats.push({ t: 'potplant', x, z, y, k: rng() < 0.6 ? 'agave' : 'broadleaf', seed: rng() * 1e6 });
+        out.circles.push([x, z, 0.5, y]);
+      } else if (r < 0.88) {
+        out.feats.push({ t: 'urns', x, z, y, n: 1 + Math.floor(rng() * 3), seed: rng() * 1e6 });
+        out.circles.push([x + 0.1, z + 0.2, 0.75, y]);
+      } else {
+        const d = Math.floor(rng() * 4);
+        out.feats.push({ t: 'bench', x, z, y, rot: dirAngle(d) });
+        out.boxes.push(orientedBox(x, z, d, 1.5, 0.5, y));
+      }
+      ctx.used[j * N + i] = 3;
+      placed++;
+    }
+  }
+
   // Devotees: silent, still figures.
   if (P.reachable && area >= 20 && rng() < 0.24) {
     const count = 1 + Math.floor(rng() * 3);

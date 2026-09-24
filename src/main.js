@@ -10,7 +10,7 @@ import { PathFollower } from './player/follow.js';
 import { Ambience } from './audio/Ambience.js';
 
 const params = new URLSearchParams(location.search);
-const seed = params.has('seed') ? parseInt(params.get('seed'), 10) >>> 0 : 0x5e22a4;
+const seed = params.has('seed') ? parseInt(params.get('seed'), 10) >>> 0 : 8;
 const WALK = 2.2;
 const RUN = 4.6;
 

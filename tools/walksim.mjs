@@ -11,7 +11,7 @@ import { BLOCK_SIZE } from '../src/config.js';
 import { makeRng } from '../src/world/rng.js';
 
 globalThis.navigator ??= { hardwareConcurrency: 1 };
-const seed = +(process.argv[2] ?? 0x5e22a4);
+const seed = +(process.argv[2] ?? 8);
 const trips = +(process.argv[3] ?? 20);
 const gen = new Generator(seed);
 const warn = console.warn;
