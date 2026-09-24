@@ -9,8 +9,14 @@ import { findPath } from './player/pathfind.js';
 import { PathFollower } from './player/follow.js';
 import { Ambience } from './audio/Ambience.js';
 
-const params = new URLSearchParams(location.search);
-const seed = params.has('seed') ? parseInt(params.get('seed'), 10) >>> 0 : 8;
+// World seed: #seed-123 (works everywhere, including sandboxed embeds), or ?seed=123
+function readSeed() {
+  const m = /^#(?:seed-)?(\d+)$/.exec(location.hash);
+  if (m) return parseInt(m[1], 10) >>> 0;
+  const q = new URLSearchParams(location.search).get('seed');
+  return q !== null && /^\d+$/.test(q) ? parseInt(q, 10) >>> 0 : 8;
+}
+const seed = readSeed();
 const WALK = 2.2;
 const RUN = 4.6;
 
@@ -63,7 +69,7 @@ const ui = {
   seed: document.getElementById('seed'),
   newWorld: document.getElementById('new-world'),
 };
-ui.seed.textContent = seed.toString(36).toUpperCase();
+ui.seed.textContent = String(seed);
 
 let state = 'loading'; // loading -> title -> walking
 let steer = null;
@@ -110,8 +116,9 @@ function setMuted(m) {
 ui.sound.addEventListener('click', () => setMuted(!audio.muted));
 ui.help.addEventListener('click', () => ui.helpPanel.classList.toggle('open'));
 ui.newWorld.addEventListener('click', () => {
-  const s = (Math.random() * 2 ** 32) >>> 0;
-  location.search = `?seed=${s}`;
+  const s = Math.floor(Math.random() * 1e6);
+  location.hash = `seed-${s}`;
+  location.reload();
 });
 input.onKey = (code) => {
   if (state !== 'walking') return;

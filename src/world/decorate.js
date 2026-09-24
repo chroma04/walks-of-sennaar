@@ -3,7 +3,7 @@
 // to neighbouring blocks' structure through look(i, j) for block-local cells
 // that may lie outside the block.
 
-import { BLOCK, CELL, LEVEL_H, K_FLOOR, K_STAIR, K_BUILDING, K_LANDING, DX, DZ, M } from '../config.js';
+import { BLOCK, CELL, LEVEL_H, K_STAIR, K_BUILDING, K_LANDING, DX, DZ, M } from '../config.js';
 import { hash2, makeRng } from './rng.js';
 
 const N = BLOCK;
@@ -119,7 +119,7 @@ function decorateTerrace(ctx, P) {
     cloister(ctx, P, y);
   }
 
-  if (program !== 'cloister' && P.reachable) centrePiece(ctx, P, y, area);
+  if (program !== 'cloister' && P.reachable) centrePiece(ctx, P, y);
 
   // Walls rising from this terrace: planters, benches, doors, ground-floor windows.
   for (let d = 0; d < 4; d++) {
@@ -438,7 +438,7 @@ function cloister(ctx, P, y) {
   out.feats.push({ t: 'cloister', x0: X0, z0: Z0, x1: X1, z1: Z1, y, ent, seed: rng() * 1e6 });
 }
 
-function centrePiece(ctx, P, y, area) {
+function centrePiece(ctx, P, y) {
   const { rng, out } = ctx;
   const r = rng();
   let type;

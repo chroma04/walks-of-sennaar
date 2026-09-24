@@ -15,7 +15,7 @@ npm test          # connectivity + walking checks (headless, Node 22)
 
 `dist/` is a plain static site (relative paths). You can host it anywhere. `.github/workflows/pages.yml` publishes it to GitHub Pages on every push to `main`. For that to work, set the repository's **Settings → Pages → Source** to **GitHub Actions**.
 
-Add `?seed=<number>` to the URL to walk a different world. The help panel (the **?** button) also has a link to a random one.
+Add `#seed-<number>` (or `?seed=<number>`) to the URL to walk a different world. The help panel (the **?** button) also has a link to a random one.
 
 ## Controls
 
