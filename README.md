@@ -11,6 +11,7 @@ npm install
 npm run dev       # http://localhost:5173
 npm run build     # static site in dist/
 npm test          # connectivity + walking checks (headless, Node 22)
+npm run artifact  # dist/artifact.html + dist/assets/, for publishing as a claude.ai Artifact
 ```
 
 `dist/` is a plain static site (relative paths). You can host it anywhere. `.github/workflows/pages.yml` publishes it to GitHub Pages on every push to `main`. For that to work, set the repository's **Settings → Pages → Source** to **GitHub Actions**.

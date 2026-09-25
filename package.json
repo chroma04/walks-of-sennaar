@@ -7,7 +7,8 @@
     "dev": "vite",
     "build": "vite build",
     "preview": "vite preview",
-    "test": "node tools/connectivity.mjs 8 2 0 0 && node tools/connectivity.mjs 777 2 10 -4 && node tools/walksim.mjs 8 20 && node tools/crowdsim.mjs 8 45"
+    "test": "node tools/connectivity.mjs 8 2 0 0 && node tools/connectivity.mjs 777 2 10 -4 && node tools/walksim.mjs 8 20 && node tools/crowdsim.mjs 8 45",
+    "artifact": "vite build && node tools/artifact.mjs"
   },
   "dependencies": {
     "three": "^0.186.0"
