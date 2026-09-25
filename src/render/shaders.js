@@ -274,6 +274,11 @@ void main() {
   } else if (m == 11) {
     col = vec3(1.0, 0.98, 0.93) * (0.94 + 0.06 * sin(uTime * 9.0 + vWorld.y * 6.0));
     glow = 0.7;
+  } else if (m == 20) {
+    // flame: hot at the core, flickering, lit from within
+    float fl = 0.5 + 0.5 * sin(uTime * 11.0 + vWorld.x * 3.1 + vWorld.z * 2.3) * sin(uTime * 7.3 + vWorld.y * 5.0);
+    col = mix(shade, lit, 0.15 + 0.35 * fl + 0.45 * max(N.y, 0.0));
+    glow = 0.14 + 0.12 * fl;
   } else if (m == 17) {
     // foam: a broken, glittering line where water meets stone
     float f1 = sin(vWorld.x * 11.0 + uTime * 3.1 + sin(vWorld.z * 7.0)) * sin(vWorld.z * 12.0 - uTime * 2.9 + sin(vWorld.x * 6.0));
@@ -309,7 +314,7 @@ void main() {
 
   // etched hatching, heavier in shade
   bool wet = m == 5 || m == 17 || m == 18 || m == 19;
-  bool flatLit = m == 11 || wet;
+  bool flatLit = m == 11 || m == 20 || wet;
   if (!flatLit) {
     float amt = (1.0 - light) * 0.2 + (vertical ? 0.035 : 0.0);
     float h = hatchLines(vLocal, N, 0.1, 0.13);

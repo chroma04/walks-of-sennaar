@@ -882,6 +882,331 @@ function bollard() {
   return b.freeze();
 }
 
+// ---------------------------------------------------------------------------
+// Lights, standards and garden pieces that frame an entrance or line an axis
+
+const OCT = (r) => circle(r, 8, 0, 0, Math.PI / 8);
+
+// Sway weights for the vertices of the given materials, growing from y0 to y1.
+function swayWhere(tpl, mats, y0, y1, max) {
+  for (let i = 0; i < tpl.count; i++) {
+    if (!mats.includes(tpl.mat[i * 2])) continue;
+    const f = Math.max(0, Math.min(1, (tpl.pos[i * 3 + 1] - y0) / (y1 - y0)));
+    tpl.mat[i * 2 + 1] = Math.max(1, Math.round(f * max));
+  }
+  return tpl;
+}
+
+// A small gilded lantern with a flame inside, origin at its foot.
+function lantern(b, s = 1) {
+  b.withTransform(T.scale(s), () => {
+    b.m = M.GOLD;
+    b.prism(OCT(0.19), 0, 0.07, { top: true });
+    for (let k = 0; k < 4; k++) {
+      const a = (k / 4) * Math.PI * 2 + Math.PI / 4;
+      b.box(Math.cos(a) * 0.15 - 0.022, 0.07, Math.sin(a) * 0.15 - 0.022, Math.cos(a) * 0.15 + 0.022, 0.42, Math.sin(a) * 0.15 + 0.022, 0b110011);
+    }
+    b.m = M.FLAME;
+    b.prism(OCT(0.11), 0.07, 0.4, { top: false });
+    b.m = M.GOLD;
+    b.lathe([[0.21, 0.42], [0.2, 0.47], [0.0, 0.7]], 8, { smooth: false, phase: Math.PI / 8 });
+    b.lathe([[0.035, 0.68], [0.06, 0.74], [0.0, 0.84]], 6);
+  });
+}
+
+// Lamp standard: a slender octagonal shaft carrying a lantern, 3.4 m.
+function lamp() {
+  const b = new GeoBuilder(1024);
+  b.m = M.STONE;
+  b.box(-0.27, 0, -0.27, 0.27, 0.28, 0.27, 0b110111);
+  b.frustum(0, 0.28, 0, 0.42, 0.22, 0.16, false);
+  b.prism(OCT(0.085), 0.44, 2.4, { top: false });
+  b.lathe([[0.085, 2.3], [0.16, 2.44], [0.17, 2.52]], 8, { capTop: true });
+  b.withTransform(T.translate(0, 2.52, 0), () => lantern(b));
+  return b.freeze();
+}
+
+// Brazier: a fluted pedestal with a gilded bowl of fire, 1.9 m.
+function brazier() {
+  const b = new GeoBuilder(1024);
+  b.m = M.STONE;
+  b.box(-0.3, 0, -0.3, 0.3, 0.16, 0.3, 0b110111);
+  b.lathe([[0.22, 0.16], [0.15, 0.3], [0.12, 0.72], [0.18, 0.84]], 8, { smooth: false, phase: Math.PI / 8 });
+  b.m = M.GOLD;
+  b.lathe([[0.14, 0.84], [0.36, 0.9], [0.5, 1.06], [0.52, 1.14], [0.46, 1.14]], 12);
+  b.m = M.DARK;
+  b.lathe([[0.47, 1.1], [0.0, 1.06]], 12);
+  b.m = M.FLAME;
+  b.lathe([[0.36, 1.08], [0.33, 1.25], [0.2, 1.5], [0.09, 1.72], [0.0, 1.9]], 7, { smooth: false });
+  b.lathe([[0.2, 1.12], [0.14, 1.5], [0.05, 1.82], [0.0, 1.95]], 5, { smooth: false, phase: 0.6 });
+  return swayWhere(b.freeze(), [M.FLAME], 1.2, 1.95, 90);
+}
+
+// Banner standard: a tall pole with a crimson banner hanging from a crossbar.
+function banner(seed) {
+  const rng = makeRng(seed);
+  const b = new GeoBuilder(2048);
+  b.m = M.STONE;
+  b.box(-0.3, 0, -0.3, 0.3, 0.3, 0.3, 0b110111);
+  b.frustum(0, 0.3, 0, 0.44, 0.2, 0.25, false);
+  b.m = M.DARK;
+  b.prism(circle(0.055, 6), 0.5, 5.3, { top: false });
+  b.box(-0.62, 4.72, -0.035, 0.62, 4.8, 0.035, 0b111111);
+  b.m = M.GOLD;
+  b.lathe([[0.07, 5.28], [0.12, 5.42], [0.04, 5.62], [0.0, 5.85]], 6);
+  for (const sg of [-1, 1]) b.withTransform(T.translate(sg * 0.64, 4.76, 0), () => b.lathe([[0.05, -0.05], [0.06, 0.02], [0.0, 0.08]], 6));
+  // the banner, in front of the pole, with a swallowtail foot
+  const top = 4.7;
+  const bot = 2.1;
+  const w = 0.55;
+  const tail = [[-w, top], [-w, bot], [0, bot + 0.38], [w, bot], [w, top]];
+  b.m = M.STRIPE;
+  b.extrude(tail, [], 0.07, 0.1, { front: true, back: true, sides: true });
+  b.m = M.CREAM;
+  for (const sg of [-1, 1]) b.extrude([[sg * w, top], [sg * (w - 0.08), top], [sg * (w - 0.08), bot + 0.06], [sg * w, bot]].map(([x, y]) => [x, y]), [], 0.065, 0.105, { front: true, back: true, sides: false });
+  b.box(-w, top - 0.2, 0.065, w, top - 0.12, 0.105, 0b110011);
+  // a golden sun, or the Devotees' triangle
+  b.m = M.GOLD;
+  if (rng() < 0.5) {
+    sunburst(b, 0, 3.75, 0.2, 0.36, 10, 0.1, 0.12);
+    b.withTransform(T.rotY(Math.PI), () => sunburst(b, 0, 3.75, 0.2, 0.36, 10, -0.07, -0.05));
+  } else {
+    const tri = [[-0.3, 3.5], [0.3, 3.5], [0, 4.02]];
+    const hole = [[-0.14, 3.6], [0, 3.84], [0.14, 3.6]];
+    b.extrude(tri, [hole], 0.1, 0.12, { front: true, sides: true });
+    b.extrude(tri, [hole], 0.05, 0.07, { front: false, back: true, sides: true });
+  }
+  return swayWhere(b.freeze(), [M.STRIPE, M.CREAM, M.GOLD], top - 0.1, bot, 150);
+}
+
+// Cypress: a tall dark flame of foliage, planted in a square stone curb.
+function cypress(seed) {
+  const rng = makeRng(seed);
+  const b = new GeoBuilder(2048);
+  const H = 4.4 + rng() * 1.3;
+  const R = 0.5 + rng() * 0.1;
+  b.m = M.STONE;
+  b.prism(rect(-0.55, -0.55, 0.55, 0.55), 0, 0.3, { hole: rect(-0.42, -0.42, 0.42, 0.42), top: true });
+  b.m = M.SOIL;
+  b.prism(rect(-0.43, -0.43, 0.43, 0.43), 0, 0.2, { top: true, sides: false });
+  b.m = M.TRUNK;
+  b.lathe([[0.1, 0.2], [0.08, 0.6]], 6);
+  b.m = M.FOLIAGE;
+  const prof = [[0.05, 0.45]];
+  const rows = 9;
+  for (let k = 1; k <= rows; k++) {
+    const t = k / rows;
+    const env = Math.sin(Math.PI * Math.min(1, 0.18 + t * 0.9)) ** 0.8 * (1 - 0.35 * t);
+    prof.push([R * env * (k % 2 ? 1.0 : 0.84), 0.45 + t * (H - 0.45)]);
+  }
+  prof.push([0, H + 0.25]);
+  b.lathe(prof, 9, { smooth: false, phase: rng() * 6 });
+  return setSway(b.freeze(), 1.2, H + 0.3, 70);
+}
+
+// Armillary sphere on a pedestal: gilded rings round the sun, 3 m.
+function armillary() {
+  const b = new GeoBuilder(4096);
+  b.m = M.STONE;
+  b.box(-0.9, 0, -0.9, 0.9, 0.22, 0.9, 0b110111);
+  b.lathe([[0.5, 0.22], [0.36, 0.38], [0.24, 0.5], [0.2, 1.05], [0.34, 1.18], [0.42, 1.3]], 8, { smooth: false, phase: Math.PI / 8, capTop: true });
+  const cy = 2.15;
+  const R = 0.78;
+  const ring = (r, t) => b.extrude(circle(r, 28), [circle(r - t, 28)], -0.03, 0.03, { front: true, back: true, sides: true });
+  b.m = M.GOLD;
+  // struts up to the horizon ring
+  for (let k = 0; k < 4; k++) {
+    const a = (k / 4) * Math.PI * 2 + Math.PI / 4;
+    const x = Math.cos(a);
+    const z = Math.sin(a);
+    b.quad([x * 0.3, 1.3, z * 0.3], [x * 0.33, 1.3, z * 0.33], [x * (R + 0.02), cy, z * (R + 0.02)], [x * (R - 0.02), cy, z * (R - 0.02)]);
+    b.quad([x * (R - 0.02), cy, z * (R - 0.02)], [x * (R + 0.02), cy, z * (R + 0.02)], [x * 0.33, 1.3, z * 0.33], [x * 0.3, 1.3, z * 0.3]);
+  }
+  b.withTransform(T.chain(T.translate(0, cy, 0), T.rotX(Math.PI / 2)), () => ring(R + 0.06, 0.07));
+  const tilt = 0.62;
+  b.withTransform(T.chain(T.translate(0, cy, 0), T.rotZ(tilt)), () => {
+    ring(R - 0.04, 0.06); // meridian
+    b.withTransform(T.rotX(Math.PI / 2), () => ring(R - 0.1, 0.05)); // equator
+    b.withTransform(T.chain(T.rotZ(0.41), T.rotX(Math.PI / 2)), () => {
+      ring(R - 0.16, 0.12); // the band of the zodiac
+    });
+    b.box(-0.02, -R - 0.12, -0.02, 0.02, R + 0.12, 0.02, 0b111111);
+  });
+  b.withTransform(T.translate(0, cy - 0.16, 0), () => b.lathe([[0.0, 0], [0.12, 0.05], [0.16, 0.16], [0.12, 0.27], [0.0, 0.32]], 10));
+  return b.freeze();
+}
+
+// Stele: an upright slab with a rounded head, carved on both faces.
+function stele(seed) {
+  const rng = makeRng(seed);
+  const b = new GeoBuilder(2048);
+  b.m = M.STONE;
+  b.box(-0.55, 0, -0.26, 0.55, 0.22, 0.26, 0b110111);
+  const W = 0.4;
+  const outline = [[-W, 0.2], [W, 0.2], ...arcPoly(W, 0, 1.55, 10).slice(0)];
+  b.extrude(outline, [], -0.12, 0.12, { front: true, back: true, sides: true });
+  for (const face of [1, -1]) {
+    b.withTransform(face > 0 ? T.identity() : T.rotY(Math.PI), () => {
+      b.m = M.CREAM;
+      sunburst(b, 0, 1.6, 0.13, 0.26, 8, 0.12, 0.14);
+      b.m = M.GLYPH;
+      for (let r = 0; r < 3; r++) {
+        for (const gx of [-0.17, 0.17]) glyph(b, gx, 1.18 - r * 0.28, 0.12, 0.2, rng);
+      }
+    });
+  }
+  return b.freeze();
+}
+
+// Chhatri: a small open kiosk of four slender columns under a dome, 1.5 m
+// square, open on every side so one can stand in it.
+function chhatri() {
+  const b = new GeoBuilder(4096);
+  const c = 0.62;
+  const H = 2.35;
+  b.m = M.STONE;
+  for (const sx of [-1, 1]) {
+    for (const sz of [-1, 1]) {
+      b.withTransform(T.translate(sx * c, 0, sz * c), () => {
+        b.box(-0.14, 0, -0.14, 0.14, 0.2, 0.14, 0b110111);
+        b.prism(OCT(0.075), 0.2, H - 0.18, { top: false });
+        b.frustum(0, H - 0.2, 0, 0.16, 0.28, 0.2, false);
+      });
+    }
+  }
+  // cusped arches between the columns, with a deep eave above
+  for (let k = 0; k < 4; k++) {
+    b.withTransform(T.chain(T.rotY((k * Math.PI) / 2), T.translate(0, 0, c)), () => {
+      // (the arch springs from the panel's foot: its own springers close the
+      // outline there)
+      const inner = pointedArch(1.02, H - 0.62, 0.72, 5, 0).slice(2);
+      const outline = [[0.76, H - 0.62], [0.76, H + 0.18], [-0.76, H + 0.18], [-0.76, H - 0.62], ...inner.slice().reverse()];
+      b.m = M.CREAM;
+      b.extrude(outline, [], -0.07, 0.07, { front: true, back: true, sides: true });
+    });
+  }
+  b.m = M.STONE;
+  b.box(-c - 0.2, H + 0.18, -c - 0.2, c + 0.2, H + 0.28, c + 0.2, 0b111111);
+  b.frustum(0, H + 0.28, 0, 2 * c + 0.56, 2 * c + 0.1, 0.16, true);
+  b.m = M.ROOF;
+  b.lathe([[0.62, 0], [0.66, 0.16], [0.6, 0.45], [0.44, 0.72], [0.22, 0.92], [0.0, 1.0]].map(([r, y]) => [r, y + H + 0.44]), 12);
+  b.m = M.GOLD;
+  const top = H + 1.42;
+  b.lathe([[0.05, top], [0.09, top + 0.1], [0.03, top + 0.24], [0.0, top + 0.44]], 6);
+  // a lamp hanging inside
+  b.withTransform(T.translate(0, H - 0.72, 0), () => lantern(b, 0.7));
+  b.m = M.DARK;
+  b.box(-0.012, H - 0.14, -0.012, 0.012, H + 0.18, 0.012, 0b110011);
+  return b.freeze();
+}
+
+// Wind catcher (badgir) standing on a roof: a tower with slotted vents at the
+// top to take in the breeze. Local X along its long side.
+function windcatcher(H) {
+  const b = new GeoBuilder(2048);
+  const hx = 0.85;
+  const hz = 0.55;
+  b.m = M.STONE;
+  b.box(-hx, -0.2, -hz, hx, H, hz, 0b110111);
+  b.box(-hx - 0.1, H * 0.55, -hz - 0.1, hx + 0.1, H * 0.55 + 0.12, hz + 0.1, 0b111111);
+  b.box(-hx - 0.08, H, -hz - 0.08, hx + 0.08, H + 0.16, hz + 0.08, 0b111111);
+  // crenellations along the top
+  for (let x = -hx; x <= hx + 1e-6; x += (2 * hx) / 4) {
+    for (const z of [-hz, hz]) b.box(x - 0.09, H + 0.16, z - 0.09, x + 0.09, H + 0.46, z + 0.09, 0b110111);
+  }
+  b.m = M.DARK;
+  const slot = (w, y0, h) => pointedArch(w, y0 + h, 0.8, 3, y0);
+  for (const face of [0, 1, 2, 3]) {
+    b.withTransform(T.rotY((face * Math.PI) / 2), () => {
+      const half = face % 2 === 0 ? hz : hx;
+      const along = face % 2 === 0 ? hx : hz;
+      const n = face % 2 === 0 ? 3 : 2;
+      for (let k = 0; k < n; k++) {
+        const x = -along + ((k + 0.5) * 2 * along) / n;
+        b.extrude(slot(0.26, H * 0.62, H * 0.22).map(([px, py]) => [px + x, py]), [], half, half + 0.012, { front: true, sides: false });
+      }
+    });
+  }
+  return b.freeze();
+}
+
+// A portal: a lower doorway than the plain door, with striped voussoirs, a
+// cream spandrel in a raised frame (an alfiz) and an inscribed band on top,
+// all under the coping of a one-storey wall. Origin at the wall foot, +Z out.
+function portal(seed) {
+  const rng = makeRng(seed);
+  const b = new GeoBuilder(4096);
+  const w = 1.2;
+  const hs = 1.35;
+  const k = 0.75;
+  const r = k * w;
+  const cx = w / 2 - r;
+  const band = 0.16;
+  const ta = Math.acos(-cx / r);
+  const ta2 = Math.acos(-cx / (r + band));
+  const W = 1.3;
+  const bw = 0.16;
+  const top = 2.42;
+  // door leaves
+  const opening = pointedArch(w, hs, k, 8, 0);
+  const oh = pointedArchHeight(w, hs, k);
+  b.m = M.DOOR;
+  b.extrude(opening, [], 0, 0.03, { front: true, sides: false, uvScale: [-w / 2, 0, 1 / w, 1 / oh] });
+  // jambs and voussoirs
+  b.m = M.CREAM;
+  for (const sg of [-1, 1]) b.box(sg > 0 ? w / 2 : -w / 2 - band, 0, 0, sg > 0 ? w / 2 + band : -w / 2, hs, 0.16, 0b110111);
+  const segs = 5;
+  let n = 0;
+  for (const side of [1, -1]) {
+    for (let q = 0; q < segs; q++) {
+      const a0 = (q / segs) * ta;
+      const a1 = ((q + 1) / segs) * ta;
+      const P = (a, rr) => [side * (cx + rr * Math.cos(a)), hs + rr * Math.sin(a)];
+      const poly = [P(a0, r), P(a0, r + band), P(a1, r + band), P(a1, r)];
+      b.m = (n++ + (side > 0 ? 0 : 1)) % 2 === 0 ? M.STRIPE : M.CREAM;
+      b.extrude(side > 0 ? poly.slice().reverse() : poly, [], 0, 0.16, { front: true, sides: true });
+    }
+  }
+  b.m = M.STRIPE;
+  b.box(-0.07, oh - 0.04, 0, 0.07, oh + band + 0.05, 0.18, 0b110111);
+  // spandrel between the arch and the frame
+  const ring = [];
+  for (let q = 0; q <= 8; q++) {
+    const a = (q / 8) * ta2;
+    ring.push([cx + (r + band) * Math.cos(a), hs + (r + band) * Math.sin(a)]);
+  }
+  const left = ring.slice(0, -1).map(([x, y]) => [-x, y]); // (the apex once)
+  const fill = [[W - bw, 0], [W - bw, top], [-W + bw, top], [-W + bw, 0], [-w / 2 - band, 0], ...left, ...ring.slice().reverse(), [w / 2 + band, 0]];
+  b.m = M.CREAM;
+  b.extrude(fill, [], 0, 0.04, { front: true, sides: false });
+  b.m = M.STONE;
+  for (const sg of [-1, 1]) sunburst(b, sg * 0.92, 1.95, 0.07, 0.15, 8, 0.04, 0.07);
+  // the frame, the inscribed band and a cornice
+  for (const sg of [-1, 1]) b.box(sg > 0 ? W - bw : -W, 0, 0, sg > 0 ? W : -W + bw, 2.6, 0.2, 0b110111);
+  b.box(-W + bw, top, 0, W - bw, 2.6, 0.1, 0b010100);
+  b.box(-W + bw, top - 0.06, 0, W - bw, top, 0.2, 0b011100);
+  b.box(-W - 0.07, 2.6, 0, W + 0.07, 2.66, 0.28, 0b111111);
+  b.m = M.GLYPH;
+  for (let x = -W + bw + 0.2; x < W - bw - 0.1; x += 0.25) glyph(b, x, 2.51, 0.1, 0.13, rng);
+  // threshold
+  b.m = M.STONE;
+  b.box(-0.9, 0, 0, 0.9, 0.1, 0.45, 0b010111);
+  return b.freeze();
+}
+
+// Wall lantern on a bracket. Origin on the wall face at its foot, +Z out.
+function sconce() {
+  const b = new GeoBuilder(1024);
+  b.m = M.STONE;
+  b.box(-0.12, 2.0, 0, 0.12, 2.36, 0.08, 0b110111);
+  b.m = M.DARK;
+  b.box(-0.025, 2.26, 0.08, 0.025, 2.31, 0.42, 0b111111);
+  b.box(-0.02, 2.02, 0.08, 0.02, 2.29, 0.12, 0b110111);
+  b.box(-0.01, 2.08, 0.4, 0.01, 2.27, 0.42, 0b110011);
+  b.withTransform(T.translate(0, 1.66, 0.41), () => lantern(b, 0.62));
+  return b.freeze();
+}
+
 export function buildTemplates() {
   const t = {
     windowSingle: windowSingle(),
@@ -915,6 +1240,16 @@ export function buildTemplates() {
     reliefPanel: [101, 202, 303].map((s) => reliefPanel(s)),
     reliefLunette: [111, 222, 333].map((s) => reliefLunette(s)),
     frieze: [0, 1, 2].map((k) => friezeTile(k, 71 + k)),
+    lamp: lamp(),
+    brazier: brazier(),
+    banner: [5, 6].map((s) => banner(s)),
+    cypress: [12, 27, 44].map((s) => cypress(s)),
+    armillary: armillary(),
+    stele: [31, 32, 33].map((s) => stele(s)),
+    chhatri: chhatri(),
+    windcatcher: [3.2, 4.0].map((h) => windcatcher(h)),
+    portal: [91, 92].map((s) => portal(s)),
+    sconce: sconce(),
     stripedArch: new Map(),
   };
   t.balcony = balcony(t.balPanel);
