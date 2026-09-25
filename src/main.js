@@ -26,7 +26,7 @@ const scene = new THREE.Scene();
 const rig = new CameraRig();
 const input = new Input(canvas);
 const audio = new Ambience();
-const player = new Player(renderer.worldMaterial);
+const player = new Player(renderer.playerMaterial);
 scene.add(player.group);
 player.onStep = (speed) => audio.step(speed);
 

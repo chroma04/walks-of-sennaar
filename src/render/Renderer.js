@@ -70,6 +70,15 @@ export class Renderer {
       fragmentShader: worldFragment,
       side: THREE.FrontSide,
     });
+    // same shader and uniforms for the traveller, minus the occlusion cut
+    this.playerMaterial = new THREE.ShaderMaterial({
+      glslVersion: THREE.GLSL3,
+      uniforms: this.uniforms,
+      defines: { NO_CUT: '' },
+      vertexShader: worldVertex,
+      fragmentShader: worldFragment,
+      side: THREE.FrontSide,
+    });
 
     this.post = new THREE.ShaderMaterial({
       glslVersion: THREE.GLSL3,

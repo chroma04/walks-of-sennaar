@@ -25,14 +25,48 @@ function ellipsoid(b, x, y, z, sx, sy, sz, segs = 10) {
   b.withTransform(T.chain(T.translate(x, y, z), T.scale(sx, sy, sz)), () => b.lathe(ELLIPSOID, segs));
 }
 
+const ROBE = [[0.36, 0.02], [0.355, 0.07], [0.31, 0.45], [0.265, 0.85], [0.235, 1.1], [0.225, 1.26], [0.19, 1.37], [0.1, 1.43], [0.0, 1.45]];
+
+// robe radius at height y
+function robeRadius(y) {
+  for (let i = 1; i < ROBE.length; i++) {
+    const [r0, y0] = ROBE[i - 1];
+    const [r1, y1] = ROBE[i];
+    if (y <= y1) return r0 + ((r1 - r0) * (y - y0)) / (y1 - y0);
+  }
+  return 0;
+}
+
+// Band hugging the robe, rising from yLow at +x to yHigh at -x.
+function strap(b, yLow, yHigh, width, segs = 28) {
+  const yc = (yLow + yHigh) / 2;
+  const k = (yHigh - yLow) / 2;
+  const row = [];
+  for (let s = 0; s <= segs; s++) {
+    const a = (s / segs) * Math.PI * 2;
+    const c = Math.cos(a);
+    const sn = Math.sin(a);
+    const y = yc - k * c;
+    const lo = robeRadius(y - width / 2) + 0.012;
+    const hi = robeRadius(y + width / 2) + 0.012;
+    row.push([b.vert(lo * c, y - width / 2, lo * sn, c, 0, sn), b.vert(hi * c, y + width / 2, hi * sn, c, 0, sn)]);
+  }
+  for (let s = 0; s < segs; s++) {
+    const [a, d] = row[s];
+    const [bb, c] = row[s + 1];
+    b.tri(a, c, bb);
+    b.tri(a, d, c);
+  }
+}
+
 function buildBody() {
   const b = new GeoBuilder(2048);
   b.m = M.ROBE;
-  b.lathe([[0.36, 0.02], [0.355, 0.07], [0.31, 0.45], [0.265, 0.85], [0.235, 1.1], [0.225, 1.26], [0.19, 1.37], [0.1, 1.43], [0.0, 1.45]], 14);
+  b.lathe(ROBE, 14);
   // hood
   b.lathe([[0.16, 1.32], [0.205, 1.42], [0.205, 1.56], [0.18, 1.7], [0.13, 1.8], [0.05, 1.86], [0.0, 1.87]], 14);
-  // hood tip falling back
-  b.withTransform(T.chain(T.translate(0, 1.76, -0.08), T.rotX(-1.05)), () => b.lathe([[0.1, 0], [0.07, 0.12], [0.0, 0.26]], 8));
+  // hood tip drooping down the back
+  b.withTransform(T.chain(T.translate(0, 1.7, -0.11), T.rotX(-2.15)), () => b.lathe([[0.1, -0.04], [0.095, 0.06], [0.065, 0.17], [0.03, 0.27], [0.0, 0.31]], 8));
   // face opening, mask and eye slit
   b.m = M.DARK;
   ellipsoid(b, 0, 1.58, 0.13, 0.125, 0.15, 0.085);
@@ -43,22 +77,20 @@ function buildBody() {
   // sash and satchel
   b.m = M.CREAM;
   b.lathe([[0.258, 0.9], [0.268, 0.95], [0.262, 1.0]], 14);
-  // strap across the chest, pivoting round the torso
-  b.withTransform(T.chain(T.translate(0, 1.12, 0), T.rotZ(0.62), T.scale(1, 0.32, 1)), () => {
-    b.lathe([[0.262, -0.1], [0.272, 0.0], [0.262, 0.1]], 14);
-  });
+  // strap from the satchel on the left hip over the right shoulder
+  strap(b, 0.93, 1.3, 0.055);
   b.m = M.GLYPH;
-  b.box(0.22, 0.72, -0.1, 0.33, 0.95, 0.12, 0b111111);
+  b.box(0.22, 0.72, -0.17, 0.33, 0.95, 0.05, 0b111111);
   b.m = M.CREAM;
-  b.box(0.215, 0.9, -0.105, 0.335, 0.94, 0.125, 0b010111);
+  b.box(0.215, 0.9, -0.175, 0.335, 0.94, 0.055, 0b010111);
   return b.freeze();
 }
 
 function buildArm() {
   const b = new GeoBuilder(512);
   b.m = M.ROBE;
-  // hangs from the origin (shoulder) downwards
-  b.lathe([[0.0, -0.58], [0.1, -0.52], [0.085, -0.25], [0.075, 0.0], [0.0, 0.03]], 8);
+  // hangs from the origin (shoulder) downwards, with a rounded shoulder cap
+  b.lathe([[0.0, -0.58], [0.1, -0.52], [0.085, -0.25], [0.078, -0.04], [0.06, 0.03], [0.0, 0.06]], 8);
   b.m = M.MASK;
   ellipsoid(b, 0, -0.6, 0.02, 0.05, 0.06, 0.05, 8);
   return b.freeze();
@@ -86,10 +118,11 @@ export class Player {
     const arm = buildArm();
     this.armL = mk(arm);
     this.armR = mk(arm);
-    this.armL.position.set(-0.24, 1.33, 0);
-    this.armR.position.set(0.24, 1.33, 0);
-    this.armL.rotation.z = 0.12;
-    this.armR.rotation.z = -0.12;
+    // hands hang just clear of the robe
+    this.armL.position.set(-0.21, 1.3, 0);
+    this.armR.position.set(0.21, 1.3, 0);
+    this.armL.rotation.z = -0.17;
+    this.armR.rotation.z = 0.17;
     this.body.add(this.armL, this.armR);
     const foot = buildFoot();
     this.footL = mk(foot);
@@ -195,8 +228,8 @@ export class Player {
     this.body.position.y = Math.abs(s) * 0.045 * amp + breathe;
     this.body.rotation.x = 0.06 * amp + run * 0.1;
     this.body.rotation.z = s * 0.025 * amp;
-    this.armL.rotation.x = s * 0.55 * amp;
-    this.armR.rotation.x = -s * 0.55 * amp;
+    this.armL.rotation.x = s * 0.55 * amp - 0.1;
+    this.armR.rotation.x = -s * 0.55 * amp - 0.1;
     this.footL.position.set(-0.11, Math.max(0, c) * 0.07 * amp, s * 0.22 * amp);
     this.footR.position.set(0.11, Math.max(0, -c) * 0.07 * amp, -s * 0.22 * amp);
     this.group.updateMatrixWorld(true);
