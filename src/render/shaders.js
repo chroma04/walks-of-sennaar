@@ -15,7 +15,12 @@ flat out int vMat;
 out float vViewZ;
 
 void main() {
-  vec4 wp = modelMatrix * vec4(position, 1.0);
+#ifdef USE_INSTANCING
+  mat4 mm = modelMatrix * instanceMatrix;
+#else
+  mat4 mm = modelMatrix;
+#endif
+  vec4 wp = mm * vec4(position, 1.0);
   float sw = aMat.y / 255.0;
   if (sw > 0.0) {
     float ph = wp.x * 0.37 + wp.z * 0.29;
@@ -26,7 +31,7 @@ void main() {
   }
   vWorld = wp.xyz;
   vLocal = position;
-  vNormal = normalize(mat3(modelMatrix) * normal);
+  vNormal = normalize(mat3(mm) * normal);
   vUv = uv;
   vMat = int(aMat.x + 0.5);
   vec4 mv = viewMatrix * wp;
@@ -51,6 +56,7 @@ uniform vec2 uShadowTexel;
 uniform sampler2D uDynShadowMap;
 uniform mat4 uDynShadowMatrix;
 uniform vec2 uDynShadowTexel;
+uniform sampler2D uNpcShadowMap;
 uniform float uFocusY;
 uniform float uTime;
 uniform vec4 uCut;      // player NDC xy, player view depth, radius (NDC y units)
@@ -93,6 +99,18 @@ float shadowTap(sampler2D map, vec2 texel, vec3 c) {
   return acc / 9.0;
 }
 
+// cheaper 2x2 version for the devotees' map
+float shadowTap4(sampler2D map, vec2 texel, vec3 c) {
+  if (c.x < 0.0 || c.y < 0.0 || c.x > 1.0 || c.y > 1.0 || c.z > 1.0) return 1.0;
+  vec2 f = fract(c.xy / texel - 0.5);
+  vec2 b = (floor(c.xy / texel - 0.5) + 0.5) * texel;
+  float s00 = c.z - 0.0006 <= texture(map, b).r ? 1.0 : 0.0;
+  float s10 = c.z - 0.0006 <= texture(map, b + vec2(texel.x, 0.0)).r ? 1.0 : 0.0;
+  float s01 = c.z - 0.0006 <= texture(map, b + vec2(0.0, texel.y)).r ? 1.0 : 0.0;
+  float s11 = c.z - 0.0006 <= texture(map, b + texel).r ? 1.0 : 0.0;
+  return mix(mix(s00, s10, f.x), mix(s01, s11, f.x), f.y);
+}
+
 float hatchLines(vec3 p, vec3 n, float spacing, float width) {
   vec3 an = abs(n);
   vec2 q = an.y > 0.6 ? p.xz : (an.x > an.z ? vec2(p.z, p.y) : vec2(p.x, p.y));
@@ -123,6 +141,7 @@ void main() {
   float sh = shadowTap(uShadowMap, uShadowTexel, sc.xyz);
   vec4 dc = uDynShadowMatrix * vec4(sp, 1.0);
   sh = min(sh, shadowTap(uDynShadowMap, uDynShadowTexel, dc.xyz));
+  sh = min(sh, shadowTap4(uNpcShadowMap, uShadowTexel, sc.xyz));
   sh = smoothstep(0.25, 0.75, sh);
   float light = smoothstep(0.02, 0.16, ndl) * sh;
 
@@ -215,7 +234,11 @@ void main() {
 
 export const depthVertex = /* glsl */ `
 void main() {
+#ifdef USE_INSTANCING
+  gl_Position = projectionMatrix * modelViewMatrix * instanceMatrix * vec4(position, 1.0);
+#else
   gl_Position = projectionMatrix * modelViewMatrix * vec4(position, 1.0);
+#endif
 }
 `;
 

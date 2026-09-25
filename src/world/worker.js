@@ -14,6 +14,8 @@ self.onmessage = (e) => {
     res.walk.kind = res.walk.kind.slice();
     res.walk.base = res.walk.base.slice();
     res.walk.stairOf = res.walk.stairOf.slice();
+    res.walk.deck = res.walk.deck.slice();
+    res.walk.dblock = res.walk.dblock.slice();
     self.postMessage({ type: 'block', id: msg.id, res }, transferables(res));
   }
 };

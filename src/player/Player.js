@@ -8,7 +8,7 @@ import { LAYER_DYNAMIC } from '../render/Renderer.js';
 
 export const RADIUS = 0.3;
 
-function toGeometry(tpl) {
+export function toGeometry(tpl) {
   const g = new THREE.BufferGeometry();
   g.setAttribute('position', new THREE.BufferAttribute(tpl.pos, 3));
   g.setAttribute('normal', new THREE.BufferAttribute(tpl.nor, 3));
@@ -96,7 +96,7 @@ function buildArm() {
   return b.freeze();
 }
 
-function buildFoot() {
+export function buildFoot() {
   const b = new GeoBuilder(256);
   b.m = M.DARK;
   ellipsoid(b, 0, 0.05, 0.05, 0.075, 0.05, 0.13, 8);
@@ -138,6 +138,7 @@ export class Player {
     this.stepCount = 0;
     this.onStep = null;
     this.time = 0;
+    this.blocked = null; // optional (x0, z0, x1, z1, y) => bool: other walkers in the way
   }
 
   place(p) {
@@ -173,7 +174,7 @@ export class Player {
       const want = this.vel.length();
       if (want > 0.01 && actual < want * 0.5) this.vel.multiplyScalar(0.6);
     }
-    const target = world.heightAt(this.pos.x, this.pos.z);
+    const target = world.heightAt(this.pos.x, this.pos.z, this.y);
     if (!Number.isNaN(target)) this.y += (target - this.y) * (1 - Math.exp(-dt * 16));
 
     const sp = Math.hypot(desired.x, desired.y) > 0.01 ? moved / Math.max(dt, 1e-4) : this.speed * Math.exp(-dt * 8);
@@ -207,7 +208,7 @@ export class Player {
     for (const [ax, az] of attempts) {
       if (Math.abs(ax) < 1e-6 && Math.abs(az) < 1e-6) continue;
       const h = world.canTraverse(x, z, this.y, x + ax, z + az, RADIUS);
-      if (!Number.isNaN(h)) {
+      if (!Number.isNaN(h) && !(this.blocked && this.blocked(x, z, x + ax, z + az, h))) {
         this.pos.x = x + ax;
         this.pos.z = z + az;
         return Math.hypot(ax, az);

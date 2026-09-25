@@ -42,7 +42,7 @@ for (let t = 0; t < trips; t++) {
     const x = player.pos.x + Math.cos(a) * r;
     const z = player.pos.z + Math.sin(a) * r;
     const h = world.standAt(x, z, RADIUS);
-    if (!Number.isNaN(h) && world.onNetwork(x, z)) goal = { x, y: h, z };
+    if (!Number.isNaN(h) && world.onNetwork(x, z, h)) goal = { x, y: h, z };
   }
   if (!goal) continue;
   const t0 = performance.now();

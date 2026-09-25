@@ -2,11 +2,12 @@
 // and answers walkability / collision queries for the traveller.
 
 import * as THREE from 'three';
-import { BLOCK, BLOCK_SIZE, CELL, STEPS_PER_CELL, K_STAIR, K_BUILDING, DX, DZ } from '../config.js';
+import { BLOCK, BLOCK_SIZE, CELL, STEPS_PER_CELL, K_STAIR, K_BUILDING, K_WATER, DX, DZ } from '../config.js';
 import { LAYER_WORLD } from '../render/Renderer.js';
 
 const N = BLOCK;
 const STEP_TOL = 0.55;
+const DECK_T = 0.55;
 const key = (bx, bz) => `${bx},${bz}`;
 
 function ramp(st, k, lx, lz) {
@@ -47,6 +48,24 @@ function segsCross(ax, az, bx, bz, cx, cz, dx, dz) {
   return d1 * d2 < 0 && d3 * d4 < 0;
 }
 
+// Ground height of a cell (NaN where one cannot stand: buildings, water).
+function groundOf(w, c, lx, lz) {
+  const k = w.kind[c];
+  if (k === K_BUILDING || k === K_WATER) return NaN;
+  if (k === K_STAIR) return ramp(w.stairs, w.stairOf[c], lx, lz);
+  return w.base[c];
+}
+
+// Whether someone at height y in cell c is on the bridge deck rather than the
+// ground below it. Without a height, the upper layer wins.
+function onDeck(w, c, lx, lz, y) {
+  const d = w.deck[c];
+  if (d !== d) return false;
+  if (y === null || y === undefined) return true;
+  const g = groundOf(w, c, lx, lz);
+  return g !== g || Math.abs(y - d) <= Math.abs(y - g);
+}
+
 // segment of edge d of cell (i, j), in block-local metres
 function edgeSeg(i, j, d) {
   const x0 = i * CELL;
@@ -76,6 +95,7 @@ export class World {
     this.nextId = 1;
     this.radius = 90;
     this.fountains = [];
+    this.listeners = { add: [], remove: [] };
     const count = Math.max(1, Math.min(3, (navigator.hardwareConcurrency || 4) - 1));
     try {
       for (let k = 0; k < count; k++) {
@@ -137,9 +157,11 @@ export class World {
     walk.obsGrid = buildObstacleGrid(walk);
     const f = [];
     for (let i = 0; i < res.fountains.length; i += 3) f.push([res.fountains[i] + res.bx * BLOCK_SIZE, res.fountains[i + 1], res.fountains[i + 2] + res.bz * BLOCK_SIZE]);
-    this.blocks.set(k, { bx: res.bx, bz: res.bz, mesh, walk, fountains: f });
+    const block = { bx: res.bx, bz: res.bz, mesh, walk, fountains: f, spawns: res.spawns || [], program: res.program };
+    this.blocks.set(k, block);
     this.refreshFountains();
     this.onChange();
+    for (const fn of this.listeners.add) fn(block);
   }
 
   refreshFountains() {
@@ -174,6 +196,7 @@ export class World {
         b.mesh.geometry.dispose();
         this.blocks.delete(k);
         removed = true;
+        for (const fn of this.listeners.remove) fn(b);
       }
     }
     if (removed) {
@@ -218,40 +241,55 @@ export class World {
     return { b, lx, lz, i, j, c: j * N + i };
   }
 
-  // Walkable floor height, or NaN.
-  heightAt(x, z) {
+  // Walkable floor height, or NaN. Under a bridge there are two floors; hint
+  // (usually the current height) picks the nearer one, and no hint the upper.
+  heightAt(x, z, hint = null) {
     const L = this.locate(x, z);
     if (!L) return NaN;
     const w = L.b.walk;
-    const k = w.kind[L.c];
-    if (k === K_BUILDING) return NaN;
-    if (k === K_STAIR) return ramp(w.stairs, w.stairOf[L.c], L.lx, L.lz);
-    return w.base[L.c];
+    if (onDeck(w, L.c, L.lx, L.lz, hint)) return w.deck[L.c];
+    return groundOf(w, L.c, L.lx, L.lz);
   }
 
-  // Whether (x, z) lies on the connected network of terraces.
-  onNetwork(x, z) {
+  // 1 on a bridge deck, 0 on the ground (for keeping the two apart in searches).
+  layerAt(x, z, y) {
     const L = this.locate(x, z);
-    return !!L && L.b.walk.reach[L.c] === 1;
+    return L && onDeck(L.b.walk, L.c, L.lx, L.lz, y) ? 1 : 0;
   }
 
-  // Top of whatever solid is there (roofs included), or -Infinity if unloaded.
-  solidTop(x, z) {
+  // Whether (x, z) (at height y) lies on the connected network of terraces.
+  onNetwork(x, z, y = null) {
     const L = this.locate(x, z);
-    if (!L) return -Infinity;
+    if (!L) return false;
+    if (onDeck(L.b.walk, L.c, L.lx, L.lz, y)) return true;
+    return L.b.walk.reach[L.c] === 1;
+  }
+
+  // Whether the point is inside solid masonry (roofs and bridge decks included).
+  solidAt(x, y, z) {
+    const L = this.locate(x, z);
+    if (!L) return false;
     const w = L.b.walk;
-    if (w.kind[L.c] === K_STAIR) return ramp(w.stairs, w.stairOf[L.c], L.lx, L.lz);
-    return w.base[L.c];
+    const d = w.deck[L.c];
+    if (d === d && y <= d && y >= d - DECK_T) return true;
+    const top = w.kind[L.c] === K_STAIR ? ramp(w.stairs, w.stairOf[L.c], L.lx, L.lz) : w.base[L.c];
+    return y <= top;
   }
 
-  nearBarrier(x, z, r) {
+  // Edge flags of the layer someone at height y is on.
+  edgeMask(L, y) {
+    const w = L.b.walk;
+    return onDeck(w, L.c, L.lx, L.lz, y) ? w.dblock[L.c] : w.eblock[L.c];
+  }
+
+  nearBarrier(x, z, r, y = null) {
     for (let oz = -1; oz <= 1; oz++) {
       for (let ox = -1; ox <= 1; ox++) {
         const px = x + ox * r;
         const pz = z + oz * r;
         const L = this.locate(px, pz);
         if (!L) continue;
-        const m = L.b.walk.eblock[L.c];
+        const m = this.edgeMask(L, y);
         if (!m) continue;
         const bxw = L.b.bx * BLOCK_SIZE;
         const bzw = L.b.bz * BLOCK_SIZE;
@@ -265,7 +303,7 @@ export class World {
     return false;
   }
 
-  crossesBarrier(x0, z0, x1, z1) {
+  crossesBarrier(x0, z0, x1, z1, y = null) {
     const seen = new Set();
     for (const [px, pz] of [[x0, z0], [x1, z1], [x0, z1], [x1, z0]]) {
       const L = this.locate(px, pz);
@@ -273,7 +311,7 @@ export class World {
       const id = `${L.b.bx},${L.b.bz},${L.c}`;
       if (seen.has(id)) continue;
       seen.add(id);
-      const m = L.b.walk.eblock[L.c];
+      const m = this.edgeMask(L, y);
       if (!m) continue;
       const bxw = L.b.bx * BLOCK_SIZE;
       const bzw = L.b.bz * BLOCK_SIZE;
@@ -315,16 +353,17 @@ export class World {
   }
 
   // Height the traveller would stand at in (x, z), or NaN if they can't.
-  standAt(x, z, r, fromY = null) {
-    const h = this.heightAt(x, z);
+  // fromY limits the step from where they are; hint picks the layer.
+  standAt(x, z, r, fromY = null, hint = fromY) {
+    const h = this.heightAt(x, z, hint);
     if (Number.isNaN(h)) return NaN;
     if (fromY !== null && Math.abs(h - fromY) > STEP_TOL) return NaN;
     for (let k = 0; k < 8; k++) {
       const a = (k / 8) * Math.PI * 2;
-      const hs = this.heightAt(x + Math.cos(a) * r, z + Math.sin(a) * r);
+      const hs = this.heightAt(x + Math.cos(a) * r, z + Math.sin(a) * r, h);
       if (Number.isNaN(hs) || Math.abs(hs - h) > STEP_TOL) return NaN;
     }
-    if (this.nearBarrier(x, z, r)) return NaN;
+    if (this.nearBarrier(x, z, r, h)) return NaN;
     if (this.hitsObstacle(x, z, r, h)) return NaN;
     return h;
   }
@@ -332,7 +371,7 @@ export class World {
   canTraverse(x0, z0, y0, x1, z1, r) {
     const h = this.standAt(x1, z1, r, y0);
     if (Number.isNaN(h)) return NaN;
-    if (this.crossesBarrier(x0, z0, x1, z1)) return NaN;
+    if (this.crossesBarrier(x0, z0, x1, z1, y0)) return NaN;
     return h;
   }
 
@@ -345,8 +384,7 @@ export class World {
       const x = origin.x + dir.x * t;
       const y = origin.y + dir.y * t;
       const z = origin.z + dir.z * t;
-      const top = this.solidTop(x, z);
-      if (y <= top) {
+      if (this.solidAt(x, y, z)) {
         let a = prevT;
         let b = t;
         for (let k = 0; k < 10; k++) {
@@ -354,7 +392,7 @@ export class World {
           const mx = origin.x + dir.x * m;
           const my = origin.y + dir.y * m;
           const mz = origin.z + dir.z * m;
-          if (my <= this.solidTop(mx, mz)) b = m;
+          if (this.solidAt(mx, my, mz)) b = m;
           else a = m;
         }
         return new THREE.Vector3(origin.x + dir.x * b, origin.y + dir.y * b, origin.z + dir.z * b);
@@ -378,7 +416,7 @@ export class World {
         const x = x0 + Math.cos(a) * r;
         const z = z0 + Math.sin(a) * r;
         const h = this.standAt(x, z, radius);
-        if (!Number.isNaN(h) && this.onNetwork(x, z)) return new THREE.Vector3(x, h, z);
+        if (!Number.isNaN(h) && this.onNetwork(x, z, h)) return new THREE.Vector3(x, h, z);
       }
     }
     return null;

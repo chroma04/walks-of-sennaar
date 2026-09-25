@@ -1,5 +1,6 @@
-// Flood-fills the traveller's collision model over a square of blocks and
-// reports terrace cells that should be reachable but are not.
+// Flood-fills the traveller's collision model over a square of blocks (both
+// layers: the ground and bridge decks) and reports terrace cells that should be
+// reachable but are not, and bridges nobody can get onto.
 //   node tools/connectivity.mjs [seed] [radiusInBlocks] [cx] [cz]
 
 import { Generator } from '../src/world/generator.js';
@@ -27,8 +28,9 @@ const STEP = 0.5;
 const x0 = (cx - R) * BLOCK_SIZE;
 const z0 = (cz - R) * BLOCK_SIZE;
 const n = ((2 * R + 1) * BLOCK_SIZE) / STEP;
-const heights = new Float32Array(n * n).fill(NaN);
-const seen = new Uint8Array(n * n);
+const heights = new Float32Array(n * n * 2).fill(NaN);
+const seen = new Uint8Array(n * n * 2);
+const GROUND = -1e9; // a height hint that always picks the ground layer
 
 // start next to the centre block's north gate
 const S = gen.structure(cx, cz);
@@ -43,27 +45,41 @@ for (let r = 0; r < 12 && !start; r += 0.5) {
     if (!Number.isNaN(h)) start = [Math.round((x - x0) / STEP), Math.round((z - z0) / STEP)];
   }
 }
+const idx = (i, j, l = 0) => (j * n + i) * 2 + l;
+{
+  const x = x0 + start[0] * STEP;
+  const z = z0 + start[1] * STEP;
+  const h = world.standAt(x, z, RADIUS);
+  const k = idx(start[0], start[1], world.layerAt(x, z, h));
+  heights[k] = h;
+  seen[k] = 1;
+  start = k;
+}
 const q = [start];
-const idx = (i, j) => j * n + i;
-heights[idx(...start)] = world.standAt(x0 + start[0] * STEP, z0 + start[1] * STEP, RADIUS);
-seen[idx(...start)] = 1;
 let reached = 0;
 const t1 = performance.now();
 while (q.length) {
-  const [i, j] = q.pop();
+  const k = q.pop();
+  const cell = k >> 1;
+  const i = cell % n;
+  const j = (cell - i) / n;
   reached++;
   const x = x0 + i * STEP;
   const z = z0 + j * STEP;
-  const y = heights[idx(i, j)];
+  const y = heights[k];
   for (const [di, dj] of [[1, 0], [-1, 0], [0, 1], [0, -1]]) {
     const a = i + di;
     const b = j + dj;
-    if (a < 0 || b < 0 || a >= n || b >= n || seen[idx(a, b)]) continue;
-    const h = world.canTraverse(x, z, y, x0 + a * STEP, z0 + b * STEP, RADIUS);
+    if (a < 0 || b < 0 || a >= n || b >= n) continue;
+    const nx = x0 + a * STEP;
+    const nz = z0 + b * STEP;
+    const h = world.canTraverse(x, z, y, nx, nz, RADIUS);
     if (Number.isNaN(h)) continue;
-    seen[idx(a, b)] = 1;
-    heights[idx(a, b)] = h;
-    q.push([a, b]);
+    const m = idx(a, b, world.layerAt(nx, nz, h));
+    if (seen[m]) continue;
+    seen[m] = 1;
+    heights[m] = h;
+    q.push(m);
   }
 }
 console.log('flood', reached, 'nodes in', ((performance.now() - t1) / 1000).toFixed(1), 's');
@@ -73,6 +89,8 @@ let bad = 0;
 let missingCells = 0;
 let pockets = 0;
 let totalCells = 0;
+let totalBridges = 0;
+let crossed = 0;
 for (let bz = cz - R; bz <= cz + R; bz++) {
   for (let bx = cx - R; bx <= cx + R; bx++) {
     const T = gen.structure(bx, bz);
@@ -84,7 +102,7 @@ for (let bz = cz - R; bz <= cz + R; bz++) {
         for (let ox = -2; ox <= 2 && !ok; ox++) {
           const i = Math.round((gx - x0) / STEP) + ox;
           const j = Math.round((gz - z0) / STEP) + oz;
-          if (i >= 0 && j >= 0 && i < n && j < n && seen[idx(i, j)]) ok = true;
+          if (i >= 0 && j >= 0 && i < n && j < n && (seen[idx(i, j, 0)] || seen[idx(i, j, 1)])) ok = true;
         }
       }
       if (!ok) {
@@ -93,6 +111,14 @@ for (let bz = cz - R; bz <= cz + R; bz++) {
       }
     }
     const inner = Math.abs(bx - cx) < R && Math.abs(bz - cz) < R;
+    for (const br of inner ? T.bridges : []) {
+      totalBridges++;
+      const c = br.cells[Math.floor(br.cells.length / 2)];
+      const i = Math.round((bx * BLOCK_SIZE + ((c % BLOCK) + 0.5) * CELL - x0) / STEP);
+      const j = Math.round((bz * BLOCK_SIZE + (Math.floor(c / BLOCK) + 0.5) * CELL - z0) / STEP);
+      if (seen[idx(i, j, 1)]) crossed++;
+      else if (process.env.DEBUG) console.log('bridge not reached', bx, bz, br.i0, br.j0, br.d);
+    }
     for (let c = 0; c < BLOCK * BLOCK && inner; c++) {
       const P = T.plots[T.plotId[c]];
       if (P.building || !P.reachable || T.kind[c] === K_BUILDING) continue;
@@ -108,10 +134,10 @@ for (let bz = cz - R; bz <= cz + R; bz++) {
           nodes.push([i, j]);
         }
       }
-      if (nodes.some(([i, j]) => seen[idx(i, j)])) continue;
+      if (nodes.some(([i, j]) => seen[idx(i, j, 0)])) continue;
       missingCells++;
       // a pocket: ground the traveller could stand on that the flood never entered
-      const standable = nodes.some(([i, j]) => !Number.isNaN(world.standAt(x0 + i * STEP, z0 + j * STEP, RADIUS)));
+      const standable = nodes.some(([i, j]) => !Number.isNaN(world.standAt(x0 + i * STEP, z0 + j * STEP, RADIUS, null, GROUND)));
       if (standable) {
         pockets++;
         if (process.env.DEBUG && pockets <= 12) console.log('pocket', bx, bz, 'cell', ci, cj, 'kind', T.kind[c], 'used', T.used[c]);
@@ -119,5 +145,5 @@ for (let bz = cz - R; bz <= cz + R; bz++) {
     }
   }
 }
-console.log(`gates missed: ${bad}; reachable-plot cells never visited: ${missingCells}/${totalCells}; standable pockets: ${pockets}`);
-process.exit(bad ? 1 : 0);
+console.log(`gates missed: ${bad}; reachable-plot cells never visited: ${missingCells}/${totalCells}; standable pockets: ${pockets}; bridges walked: ${crossed}/${totalBridges}`);
+process.exit(bad || crossed < totalBridges ? 1 : 0);
