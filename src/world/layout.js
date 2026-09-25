@@ -7,10 +7,11 @@
 // height are joined by bridges that span lower ground (a second walkable layer,
 // the "deck", so one can walk both over and under them).
 //
-// Blocks belong to districts: slow noise fields set how broad the plots are and
-// how steep the ground is. Some blocks are built around a set piece (a stepped
-// ziggurat, a sunken court, a canal with quays, a cascade of reaches and weirs)
-// that is carved out first; the rest of the block is cut by BSP around it.
+// Blocks belong to districts: slow noise fields set how broad the plots are, how
+// steep the ground is and how much water runs through it. Some blocks are built
+// around a set piece (a stepped ziggurat, a sunken court, a canal with quays, a
+// cascade of reaches and weirs, a stepwell) that is carved out first; the rest
+// of the block is cut by BSP around it. In wet districts the low ground floods.
 //
 // Connectivity guarantee: every block edge carries a "gate" cell whose level is a
 // pure function of that edge, so both blocks agree on it. Within a block, the
@@ -66,12 +67,22 @@ export function blockGates(seed, bx, bz) {
 // ---------------------------------------------------------------------------
 // Districts
 
+// wet: 0 = dry uplands, 1 = the waterworks, where set pieces run to canals,
+// cascades and stepwells and the low ground floods.
+function wetness(seed, bx, bz) {
+  return clamp(0.5 + 0.9 * valueNoise(seed ^ 0x3a7e, bx / 4.3, bz / 4.3), 0, 1);
+}
+
 function rawProgram(seed, bx, bz) {
   const civic = valueNoise(seed ^ 0xc1c1, bx / 2.6, bz / 2.6);
-  if (hashFloat(seed ^ 0x9e01, bx, bz) > 0.3 + 0.3 * civic) return 'terraces';
-  const flavour = valueNoise(seed ^ 0xf1a7, bx / 5.5, bz / 5.5) + (hashFloat(seed ^ 0x9e02, bx, bz) - 0.5) * 0.9;
-  if (flavour < -0.18) return hashFloat(seed ^ 0x9e03, bx, bz) < 0.5 ? 'cascade' : 'canal';
-  if (flavour > 0.18) return 'ziggurat';
+  const wet = wetness(seed, bx, bz);
+  if (hashFloat(seed ^ 0x9e01, bx, bz) > 0.3 + 0.3 * civic + 0.12 * wet) return 'terraces';
+  const flavour = valueNoise(seed ^ 0xf1a7, bx / 5.5, bz / 5.5) + (hashFloat(seed ^ 0x9e02, bx, bz) - 0.5) * 0.9 - 0.6 * (wet - 0.5);
+  if (flavour < -0.12) {
+    const h = hashFloat(seed ^ 0x9e03, bx, bz);
+    return h < 0.34 ? 'cascade' : h < 0.67 ? 'canal' : 'tank';
+  }
+  if (flavour > 0.22) return 'ziggurat';
   return 'court';
 }
 
@@ -85,6 +96,7 @@ export function district(seed, bx, bz) {
     program,
     relief: clamp(0.5 + 0.85 * valueNoise(seed ^ 0x4e11, bx / 3.1, bz / 3.1), 0, 1),
     grain: clamp(0.5 + 0.85 * valueNoise(seed ^ 0x9a17, bx / 3.7, bz / 3.7), 0, 1),
+    wet: wetness(seed, bx, bz),
   };
 }
 
@@ -317,6 +329,43 @@ function carveCascade(rng) {
   return { kind: 'cascade', F: R(a0, c0, a0 + L, c0 + W, {}), rects, alongX, steps: K, down, sluice: rng() < 0.65 };
 }
 
+// A stepwell: rings of terraces stepping down a level at a time to a tank of
+// water. The flights between rings turn a quarter at each level, so the way
+// down zigzags round the tank. The innermost ring is a ledge at the water.
+function carveTank(rng) {
+  const rw = 3;
+  const T = rng() < 0.5 ? 3 : 2;
+  const sw = T === 3 ? 4 + Math.floor(rng() * 3) : 5 + Math.floor(rng() * 5);
+  const sd = T === 3 ? 4 + Math.floor(rng() * 3) : 5 + Math.floor(rng() * 5);
+  const Fw = 2 * T * rw + sw;
+  const Fd = 2 * T * rw + sd;
+  const x0 = centreStart(Fw, rng);
+  const z0 = centreStart(Fd, rng);
+  const rects = [];
+  for (let k = 0; k < T; k++) {
+    const X0 = x0 + k * rw;
+    const Z0 = z0 + k * rw;
+    const X1 = x0 + Fw - k * rw;
+    const Z1 = z0 + Fd - k * rw;
+    rects.push({ x0: X0, z0: Z0, x1: X1, z1: Z0 + rw, role: 'tier', tier: k, face: 3 });
+    rects.push({ x0: X0, z0: Z1 - rw, x1: X1, z1: Z1, role: 'tier', tier: k, face: 1 });
+    rects.push({ x0: X0, z0: Z0 + rw, x1: X0 + rw, z1: Z1 - rw, role: 'tier', tier: k, face: 2 });
+    rects.push({ x0: X1 - rw, z0: Z0 + rw, x1: X1, z1: Z1 - rw, role: 'tier', tier: k, face: 0 });
+  }
+  rects.push({ x0: x0 + T * rw, z0: z0 + T * rw, x1: x0 + Fw - T * rw, z1: z0 + Fd - T * rw, role: 'water', tier: T });
+  const a = Math.floor(rng() * 4);
+  const turns = [];
+  for (let k = 0; k + 1 < T; k++) turns.push(k % 2 === 0 ? [a, (a + 2) % 4] : [(a + 1) % 4, (a + 3) % 4]);
+  return {
+    kind: 'tank',
+    F: { x0, z0, x1: x0 + Fw, z1: z0 + Fd },
+    rects,
+    T,
+    turns,
+    islet: rng() < 0.5 ? 'pavilion' : 'jet',
+  };
+}
+
 // ---------------------------------------------------------------------------
 
 export function generateStructure(seed, bx, bz) {
@@ -340,6 +389,7 @@ function build(seed, bx, bz, A, gates, D, program) {
   else if (program === 'court') feat = carveCourt(rng, D.relief);
   else if (program === 'canal') feat = carveCanal(rng);
   else if (program === 'cascade') feat = carveCascade(rng);
+  else if (program === 'tank') feat = carveTank(rng);
   if (feat) {
     const F = feat.F;
     bsp(rng, 0, 0, N, F.z0, rects, G);
@@ -371,6 +421,8 @@ function build(seed, bx, bz, A, gates, D, program) {
   }
   for (const g of gates) plots[plotId[g.j * N + g.i]].gate = g.dir;
   buildAdjacency(plots);
+  // in wet districts a sunken parterre may be a pool, flush with its ring
+  for (const p of plots) if (p.nest < 0 && rng() < 0.1 + 0.6 * D.wet) p.pool = true;
 
   const minG = Math.min(...gates.map((g) => g.level));
   const maxG = Math.max(...gates.map((g) => g.level));
@@ -448,6 +500,13 @@ function build(seed, bx, bz, A, gates, D, program) {
       if (q.nest) {
         if (p.ring !== q.ring) continue;
         seen.add(q);
+        if (q.pool) {
+          // a reflecting pool, its water just below the ring's paving
+          q.level = p.level;
+          q.water = true;
+          q.reachable = false;
+          continue;
+        }
         q.level = p.level + q.nest;
         link(p, q, true);
         queue.push(q);
@@ -483,6 +542,9 @@ function build(seed, bx, bz, A, gates, D, program) {
     for (const e of p.adj) if (!e.q.building && seen.has(e.q)) low = Math.min(low, e.q.level);
     if (low === Infinity) low = p.target;
     p.level = low - 1 - Math.floor(rng() * (p.well ? 3 : 2));
+    // in wet districts these wells of shade fill with water (never two side by
+    // side, nor against a set piece, where levels of water would meet unwalled)
+    if (p.w >= 2 && p.d >= 2 && rng() < 0.9 * D.wet - 0.15 && !p.adj.some((e) => e.q.water || e.q.feature)) p.water = true;
   }
 
   // 5. the set piece takes its levels from the ring around it
@@ -560,6 +622,7 @@ function build(seed, bx, bz, A, gates, D, program) {
   if (feat && feat.kind === 'canal') want = 2 + (rng() < 0.45 ? 1 : 0);
   else if (feat && feat.kind === 'cascade') want = 1 + (rng() < 0.45 ? 1 : 0);
   else if (feat && feat.kind === 'court') want = 1 + (rng() < 0.3 ? 1 : 0);
+  else if (feat && feat.kind === 'tank') want = 0;
   else if (rng() < 0.3 + 0.5 * D.relief) want = 1 + (rng() < 0.35 ? 1 : 0);
   if (want) placeBridges(ctx, want, feat);
 
@@ -570,7 +633,7 @@ function build(seed, bx, bz, A, gates, D, program) {
     anchor: A,
     program: feat ? feat.kind : 'terraces',
     district: D,
-    feature: feat ? { kind: feat.kind, F: feat.F, shrine: feat.shrine, colonnade: feat.colonnade, garden: feat.garden, alongX: feat.alongX, axes: feat.axes, steps: feat.steps, down: feat.down, sluice: feat.sluice } : null,
+    feature: feat ? { kind: feat.kind, F: feat.F, shrine: feat.shrine, colonnade: feat.colonnade, garden: feat.garden, alongX: feat.alongX, axes: feat.axes, steps: feat.steps, down: feat.down, sluice: feat.sluice, islet: feat.islet } : null,
     gates,
     plots: plots.map(({ adj, ...p }) => ({ ...p, adj: adj.map((e) => ({ q: e.q.id, dir: e.dir, lo: e.lo, hi: e.hi, line: e.line })) })),
     plotId,
@@ -656,6 +719,25 @@ function programLevels(feat, plots, plotId, link, axial, rng) {
       if (next) axial.push({ low: next, high: p, b0: p.outer, w: 1 });
     }
     for (const p of banks) if (p.step === 0 || p.step === feat.steps - 1 || rng() < 0.5) joinRing(p, 1);
+  } else if (feat.kind === 'tank') {
+    // the tank lies at the level of the innermost ledge, just below its paving
+    for (const p of fp) p.level = ring - 1 - Math.min(p.tier, feat.T - 1);
+    const tierPlot = (t, face) => fp.find((p) => p.role === 'tier' && p.tier === t && p.face === face);
+    // broad ghats between the rings, nearly as wide as the inner ring's face
+    feat.turns.forEach((faces, t) => {
+      for (const face of faces) {
+        const low = tierPlot(t + 1, face);
+        const e = low.adj.find((q) => q.q === tierPlot(t, face));
+        const W = e.hi - e.lo - 2;
+        axial.push({ low, high: tierPlot(t, face), b0: e.lo + 1, w: W });
+      }
+    });
+    // down from the ring round the rim, on the faces the first flights do not use
+    const first = feat.turns.length ? feat.turns[0] : [];
+    const rim = fp.filter((p) => p.role === 'tier' && p.tier === 0);
+    let n = 0;
+    for (const p of rim) if (!first.includes(p.face)) n += joinRing(p, 1);
+    if (!n) for (const p of rim) if (first.includes(p.face)) joinRing(p, 1);
   }
 }
 
@@ -670,13 +752,19 @@ function axisFoot(F, d) {
 }
 
 // Flood the plots over same-level frontage, stairs and bridges from the spine.
+// Frontage only counts where a stair does not fill it from end to end.
 function reachedPlots(ctx) {
-  const { plots, stairs, bridges } = ctx;
+  const { plots, stairs, bridges, kind } = ctx;
   const walk = (p) => !p.building && !p.water;
+  const flat = (i, j) => kind[j * N + i] !== K_STAIR;
+  const open = (e) => {
+    for (let b = e.lo; b < e.hi; b++) if (flat(...boundaryCell(e, -1, b)) && flat(...boundaryCell(e, 0, b))) return true;
+    return false;
+  };
   const nb = plots.map(() => []);
   for (const p of plots) {
     if (!walk(p)) continue;
-    for (const e of p.adj) if (walk(e.q) && e.q.level === p.level) nb[p.id].push(e.q.id);
+    for (const e of p.adj) if (walk(e.q) && e.q.level === p.level && open(e)) nb[p.id].push(e.q.id);
   }
   for (const s of stairs) {
     nb[s.low].push(s.high);

@@ -46,9 +46,12 @@ export function meshBlock(S, D, look, tp) {
     const k = S.kind[c];
     if (k === K_FLOOR || k === K_LANDING) return D.floorMat[c] === M.GRASS ? M.GRASS : M.STONE;
     if (k === K_BUILDING && flatTop(plotOf(c))) return M.STONE;
-    if (k === K_WATER) return M.WATER;
+    if (k === K_WATER) return M.CANAL;
     return -1;
   };
+  // water churned by a culvert pouring in: cell -> sides
+  const churn = new Map();
+  for (const f of D.feats) if (f.t === 'culvert' && f.churn) for (const [i, j, d] of f.churn) churn.set(j * N + i, (churn.get(j * N + i) || 0) | (1 << d));
   for (let j = 0; j < N; j++) {
     for (let i = 0; i < N; i++) {
       const c = j * N + i;
@@ -56,8 +59,8 @@ export function meshBlock(S, D, look, tp) {
       if (m < 0) continue;
       const y = S.base[c];
       b.m = m;
-      b.quad([i * CELL, y, (j + 1) * CELL], [(i + 1) * CELL, y, (j + 1) * CELL], [(i + 1) * CELL, y, j * CELL], [i * CELL, y, j * CELL]);
-      if (m === M.WATER) foam(b, i, j, y, look);
+      const uvs = m === M.CANAL ? waterEdges(i, j, y, look, churn.get(c) || 0) : null;
+      b.quad([i * CELL, y, (j + 1) * CELL], [(i + 1) * CELL, y, (j + 1) * CELL], [(i + 1) * CELL, y, j * CELL], [i * CELL, y, j * CELL], uvs);
     }
   }
 
@@ -652,6 +655,18 @@ function feature(b, f, tp) {
     case 'culvert':
       b.withTransform(at(f.x, f.y, f.z, f.rot), () => culvert(b, f));
       break;
+    case 'lockgate':
+      b.withTransform(at(f.x, f.y, f.z, f.rot), () => lockGate(b, f));
+      break;
+    case 'winch':
+      b.withTransform(at(f.x, f.y, f.z, f.rot), () => winch(b));
+      break;
+    case 'jets':
+      b.withTransform(at(f.x, f.y, f.z, f.rot), () => jets(b, f));
+      break;
+    case 'islet':
+      b.withTransform(T.translate(f.x, f.y, f.z), () => islet(b, f, tp));
+      break;
     default:
   }
 }
@@ -713,28 +728,35 @@ function turret(b, f) {
 // ---------------------------------------------------------------------------
 // Waterworks
 
-// Glittering foam where water meets stone, and a broad band at the foot of a
-// weir where a higher reach pours in.
-function foam(b, i, j, y, look) {
-  b.m = M.FOAM;
-  const yf = y + 0.015;
+// Which sides of a water cell meet stone, carried to the shader in the uvs so
+// it can draw the foam, the shallows and the churn at the foot of a weir.
+// u: bit d = stone across side d, bit 4 + k = stone only across corner k
+// (+x+z, -x+z, -x-z, +x-z); v: bit d = water pours in across side d, over a
+// weir from a higher reach or out of a culvert (extra).
+function waterEdges(i, j, y, look, extra) {
+  let sides = 0;
+  let pour = extra;
   for (let d = 0; d < 4; d++) {
     const n = look(i + DX[d], j + DZ[d]);
-    let w;
-    if (n.kind !== K_WATER) w = 0.22;
-    else if (n.base > y + 0.5) w = 0.7;
-    else continue;
-    const x0 = i * CELL;
-    const z0 = j * CELL;
-    const x1 = x0 + CELL;
-    const z1 = z0 + CELL;
-    let r;
-    if (d === 0) r = [x1 - w, z0, x1, z1];
-    else if (d === 2) r = [x0, z0, x0 + w, z1];
-    else if (d === 1) r = [x0, z1 - w, x1, z1];
-    else r = [x0, z0, x1, z0 + w];
-    b.quad([r[0], yf, r[3]], [r[2], yf, r[3]], [r[2], yf, r[1]], [r[0], yf, r[1]]);
+    if (n.kind !== K_WATER) sides |= 1 << d;
+    else if (n.base > y + 0.5) pour |= 1 << d;
   }
+  const open = (d) => !(sides & (1 << d)) && !(pour & (1 << d));
+  const corners = [
+    [0, 1],
+    [2, 1],
+    [2, 3],
+    [0, 3],
+  ];
+  corners.forEach(([a, c], k) => {
+    if (!open(a) || !open(c)) return;
+    const n = look(i + DX[a] + DX[c], j + DZ[a] + DZ[c]);
+    if (n.kind !== K_WATER) sides |= 1 << (4 + k);
+    else if (n.base > y + 0.5) pour |= 1 << (4 + k);
+  });
+  const u = sides / 255;
+  const v = pour / 255;
+  return [u, v, u, v, u, v, u, v];
 }
 
 // Local frame: origin on the wall face where the rill starts, +Z along it.
@@ -882,8 +904,165 @@ function culvert(b, f) {
     const hw = w * 0.42;
     b.m = M.FALL;
     b.quad([-hw, 0.01, 0.95], [hw, 0.01, 0.95], [hw, 0.4, -0.05], [-hw, 0.4, -0.05]);
+  }
+}
+
+// Mitre gates across a canal. Origin on the water at the middle of the gate
+// line, +Z downstream: the two crimson leaves meet in a point facing upstream.
+function lockGate(b, f) {
+  const hw = f.w / 2;
+  const top = f.rise + 0.6;
+  const bot = -0.35;
+  const t = 0.12;
+  const tip = -hw * 0.3; // how far upstream the leaves meet
+  for (const sg of [-1, 1]) {
+    const hx = sg * hw;
+    const L = Math.hypot(hx, tip);
+    const ux = -hx / L;
+    const uz = tip / L;
+    const F = T.chain(T.translate(hx, 0, 0), T.rotY(Math.atan2(-uz, ux)));
+    b.withTransform(F, () => {
+      // local +X from the heel to the mitre, +Z to one face
+      b.m = M.STRIPE;
+      b.box(0.18, bot, -t, L - 0.1, top - 0.12, t, 0b111111);
+      b.m = M.DARK;
+      for (let y = 0.1; y < top - 0.3; y += 0.42) {
+        for (const fz of [t, -t - 0.02]) b.box(0.2, y - 0.025, fz, L - 0.12, y + 0.025, fz + 0.02, 0b111111);
+      }
+      b.m = M.CREAM;
+      b.box(0.18, top - 0.14, -t - 0.03, L - 0.04, top, t + 0.03, 0b111111);
+      b.box(0.18, 0.28, -t - 0.03, L - 0.1, 0.4, t + 0.03, 0b111111);
+      // heel post against the wall, and the mitre post
+      b.box(0, bot, -t - 0.05, 0.22, top + 0.32, t + 0.05, 0b111111);
+      b.box(L - 0.16, bot, -t - 0.02, L, top + 0.08, t + 0.02, 0b111111);
+      b.m = M.GOLD;
+      b.withTransform(T.translate(0.11, top + 0.32, 0), () => b.lathe([[0.1, 0], [0.13, 0.08], [0.04, 0.2], [0.0, 0.32]], 6));
+      // a diamond boss either side of the middle rail
+      for (const [cx, cy] of [[L * 0.35, top * 0.55], [L * 0.7, top * 0.55]]) {
+        b.extrude([[cx, cy - 0.2], [cx + 0.14, cy], [cx, cy + 0.2], [cx - 0.14, cy]], [], -t - 0.03, t + 0.03, { front: true, back: true, sides: true });
+      }
+    });
+    // water heaped white against the upstream faces
     b.m = M.FOAM;
-    b.quad([-hw - 0.2, 0.02, 1.9], [hw + 0.2, 0.02, 1.9], [hw + 0.2, 0.02, 0.9], [-hw - 0.2, 0.02, 0.9]);
+    const nx = uz;
+    const nz = -ux;
+    const s0 = nz < 0 ? 1 : -1;
+    const o0 = 0.14;
+    const o1 = 0.5;
+    const p = (a, o) => [hx + ux * a + nx * s0 * o, 0.02, uz * a + nz * s0 * o];
+    flatQuad(b, [p(0.2, o1), p(L, o1), p(L, o0), p(0.2, o0)]);
+  }
+}
+
+// A horizontal quad facing up, whichever way round its corners come.
+function flatQuad(b, q) {
+  const ny = (q[1][2] - q[0][2]) * (q[3][0] - q[0][0]) - (q[1][0] - q[0][0]) * (q[3][2] - q[0][2]);
+  if (ny >= 0) b.quad(q[0], q[1], q[2], q[3]);
+  else b.quad(q[3], q[2], q[1], q[0]);
+}
+
+// A winch on the quay: a stone pedestal with a gilded wheel and its crank.
+function winch(b) {
+  b.m = M.STONE;
+  b.box(-0.32, 0, -0.32, 0.32, 0.12, 0.32, 0b111111);
+  b.box(-0.22, 0.12, -0.22, 0.22, 0.95, 0.22, 0b110111);
+  b.box(-0.3, 0.95, -0.3, 0.3, 1.07, 0.3, 0b111111);
+  b.withTransform(T.chain(T.translate(0, 1.55, 0), T.rotY(Math.PI / 2)), () => {
+    b.m = M.GOLD;
+    b.extrude(circle(0.42, 14), [circle(0.33, 14)], -0.04, 0.04, { front: true, back: true, sides: true });
+    for (let k = 0; k < 3; k++) {
+      b.withTransform(T.rotZ((k * Math.PI) / 3), () => b.box(-0.36, -0.03, -0.03, 0.36, 0.03, 0.03, 0b111111));
+    }
+    b.m = M.DARK;
+    b.box(-0.05, -0.05, -0.2, 0.05, 0.05, 0.2, 0b111111);
+    b.box(-0.04, -0.48, 0.14, 0.04, 0.0, 0.2, 0b111111);
+  });
+  b.m = M.STONE;
+  b.box(-0.08, 1.07, -0.12, 0.08, 1.55, 0.12, 0b110111);
+}
+
+// Jets arching into a pool from its long sides. Origin on the water in the
+// middle of the pool, +Z along it, X across; f.rim is the paving above water.
+function jets(b, f) {
+  const hw = f.width / 2;
+  const segs = 8;
+  const r = 0.035;
+  for (const z of f.at) {
+    for (const sg of f.both ? [-1, 1] : [-1]) {
+      // built from the -X side; the other side is its mirror image
+      b.withTransform(T.scale(sg < 0 ? 1 : -1, 1, 1), () => jet(b, f, hw, z, segs, r));
+    }
+  }
+}
+
+// One jet from the rim on the -X side, arching towards +X.
+function jet(b, f, hw, z, segs, r) {
+  const x0 = -(hw - 0.05);
+  const y0 = f.rim + 0.08;
+  const reach = f.both ? hw - 0.35 : 2 * hw - 0.6;
+  const x1 = x0 + reach;
+  const h = Math.min(1.7, 0.55 + reach * 0.22);
+  const pt = (u) => [x0 + (x1 - x0) * u, y0 * (1 - u) + 4 * h * u * (1 - u)];
+  b.m = M.GOLD;
+  b.box(x0 - 0.09, f.rim - 0.02, z - 0.07, x0 + 0.09, f.rim + 0.1, z + 0.07, 0b110111);
+  b.m = M.WHITE;
+  for (let q = 0; q < segs; q++) {
+    const [ax, ay] = pt(q / segs);
+    const [cx, cy] = pt((q + 1) / segs);
+    const w = r * (1 + (q / segs) * 0.8);
+    // a thin square tube from a to c
+    b.quad([ax, ay + w, z - w], [ax, ay + w, z + w], [cx, cy + w, z + w], [cx, cy + w, z - w]);
+    b.quad([ax, ay - w, z + w], [ax, ay - w, z - w], [cx, cy - w, z - w], [cx, cy - w, z + w]);
+    b.quad([ax, ay - w, z + w], [cx, cy - w, z + w], [cx, cy + w, z + w], [ax, ay + w, z + w]);
+    b.quad([cx, cy - w, z - w], [ax, ay - w, z - w], [ax, ay + w, z - w], [cx, cy + w, z - w]);
+  }
+  // the ring of spray where it lands
+  b.m = M.FOAM;
+  b.prism(circle(0.32, 8, x1, z), 0.0, 0.03, { top: true, sides: false });
+}
+
+// An islet in a tank or pool. Origin on the water at its middle.
+function islet(b, f, tp) {
+  const s = f.size / 2;
+  const top = f.rise;
+  b.m = M.STONE;
+  b.box(-s, -0.4, -s, s, top, s, 0b110111);
+  b.box(-s - 0.12, top - 0.14, -s - 0.12, s + 0.12, top + 0.04, s + 0.12, 0b111111);
+  // a skirt of foam round its foot
+  b.m = M.FOAM;
+  const o = s + 0.22;
+  b.prism(rect(-o, -o, o, o), 0.0, 0.025, { hole: rect(-s, -s, s, s), top: true, sides: false });
+  if (f.kind === 'pavilion') {
+    b.appendTemplate(tp.pavilion, T.translate(0, top + 0.04, 0));
+    return;
+  }
+  // a basin brimming with a plume of water that falls back in arcs
+  const y0 = top + 0.04;
+  b.m = M.STONE;
+  b.prism(circle(1.05, 12), y0, y0 + 0.45, { hole: circle(0.88, 12), top: true });
+  b.m = M.WATER;
+  b.prism(circle(0.89, 12), y0 + 0.05, y0 + 0.36, { top: true, sides: false });
+  b.m = M.STONE;
+  b.prism(circle(0.18, 8), y0 + 0.1, y0 + 0.7, { top: true });
+  b.m = M.WHITE;
+  const H = 2.6 + (f.seed % 7) * 0.12;
+  b.lathe([[0.1, y0 + 0.7], [0.07, y0 + H * 0.8], [0.2, y0 + H], [0.0, y0 + H + 0.25]], 8);
+  const segs = 7;
+  for (let k = 0; k < 8; k++) {
+    const a = (k / 8) * Math.PI * 2 + 0.2;
+    const ca = Math.cos(a);
+    const sa = Math.sin(a);
+    const pt = (u) => {
+      const rr = 0.15 + 0.62 * u;
+      return [ca * rr, y0 + H - 0.1 + 0.35 * u - (H - 0.36 + 0.35) * u * u, sa * rr];
+    };
+    for (let q = 0; q < segs; q++) {
+      const p0 = pt(q / segs);
+      const p1 = pt((q + 1) / segs);
+      const w = 0.03 + 0.03 * (q / segs);
+      b.quad([p0[0] - sa * w, p0[1], p0[2] + ca * w], [p0[0] + sa * w, p0[1], p0[2] - ca * w], [p1[0] + sa * w, p1[1], p1[2] - ca * w], [p1[0] - sa * w, p1[1], p1[2] + ca * w]);
+      b.quad([p1[0] - sa * w, p1[1], p1[2] + ca * w], [p1[0] + sa * w, p1[1], p1[2] - ca * w], [p0[0] + sa * w, p0[1], p0[2] - ca * w], [p0[0] - sa * w, p0[1], p0[2] + ca * w]);
+    }
   }
 }
 
