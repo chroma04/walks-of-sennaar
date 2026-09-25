@@ -98,6 +98,8 @@ export class Renderer {
         uSkyTop: { value: new THREE.Vector3(...SKY_TOP) },
         uSkyBottom: { value: new THREE.Vector3(...SKY_BOTTOM) },
         uTime: { value: 0 },
+        uCut: this.uniforms.uCut,
+        uResolution: this.uniforms.uResolution,
       },
       vertexShader: fullscreenVertex,
       fragmentShader: compositeFragment,
@@ -172,7 +174,9 @@ export class Renderer {
     const texel = snap ? Math.max(1, Math.round(snap / texel0)) * texel0 : texel0;
     const cx = Math.round(center.dot(x) / texel) * texel;
     const cy = Math.round(center.dot(y) / texel) * texel;
-    const cz = center.dot(z);
+    // snapped too, so a frame that keeps the key keeps the whole light frame:
+    // the devotees' map is drawn every frame against the cached matrix
+    const cz = snap ? Math.round(center.dot(z) / 8) * 8 : center.dot(z);
     const c = new THREE.Vector3().addScaledVector(x, cx).addScaledVector(y, cy).addScaledVector(z, cz);
     cam.left = -half;
     cam.right = half;
@@ -185,7 +189,7 @@ export class Renderer {
     cam.up.copy(y);
     cam.lookAt(c);
     cam.updateMatrixWorld(true);
-    return `${cx.toFixed(2)},${cy.toFixed(2)},${Math.round(cz / 8)},${half}`;
+    return `${cx.toFixed(2)},${cy.toFixed(2)},${cz.toFixed(2)},${half}`;
   }
 
   render(scene, camera, info) {

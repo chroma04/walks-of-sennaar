@@ -80,7 +80,7 @@ export class Generator {
     };
     let fountains = [];
     const splashing = new Set(['fountain', 'pool', 'spout', 'basin', 'rill', 'wallfountain', 'weir', 'sluice']);
-  for (const f of D.feats) if (splashing.has(f.t) || (f.t === 'culvert' && f.pour)) fountains.push(f.x, f.y, f.z);
+    for (const f of D.feats) if (splashing.has(f.t) || (f.t === 'culvert' && f.pour)) fountains.push(f.x, f.y, f.z);
     fountains = new Float32Array(fountains);
     return { bx, bz, geo, walk, fountains, spawns: D.spawns, program: S.program, failed: S.failedLinks };
   }

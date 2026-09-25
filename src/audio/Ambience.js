@@ -23,6 +23,10 @@ function noiseBuffer(ctx, seconds, brown = false) {
       d[i] = last * 3.5;
     } else d[i] = w;
   }
+  // brown noise wanders off: lean it back to where it started so the loop
+  // does not click at the seam
+  const end = brown ? d[len - 1] : 0;
+  for (let i = 0; end && i < len; i++) d[i] -= (end * i) / (len - 1);
   return buf;
 }
 

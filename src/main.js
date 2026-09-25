@@ -119,9 +119,11 @@ function setMuted(m) {
 ui.sound.addEventListener('click', () => setMuted(!audio.muted));
 ui.help.addEventListener('click', () => ui.helpPanel.classList.toggle('open'));
 ui.newWorld.addEventListener('click', () => {
-  const s = Math.floor(Math.random() * 1e6);
-  location.hash = `seed-${s}`;
-  location.reload();
+  location.hash = `seed-${Math.floor(Math.random() * 1e6)}`;
+});
+// a new seed in the address (the link above, typing, back / forward) is a new world
+window.addEventListener('hashchange', () => {
+  if (readSeed() !== seed) location.reload();
 });
 input.onKey = (code) => {
   if (state !== 'walking') return;
@@ -205,7 +207,7 @@ function frame(now) {
     }
   }
 
-  const inp = input.poll();
+  const inp = input.poll(dt);
   const desired = new THREE.Vector2();
   if (state === 'walking') {
     if (inp.rotateSteps) rig.rotateStep(inp.rotateSteps > 0 ? 1 : -1);
