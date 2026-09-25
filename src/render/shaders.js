@@ -107,12 +107,15 @@ void main() {
   vec3 N = normalize(vNormal);
   int m = vMat;
 
-  // cut a window through geometry that hides the traveller
+  // cut a window through geometry that hides the traveller (but never through
+  // the traveller, whose head is nearer the camera than its feet)
+#ifndef NO_CUT
   if (uCut.w > 0.0) {
     vec2 ndc = gl_FragCoord.xy / uResolution * 2.0 - 1.0;
     vec2 dd = (ndc - uCut.xy) * vec2(uResolution.x / uResolution.y, 0.75);
     if (vViewZ < uCut.z - 1.0 && vWorld.y > uCutY + 0.7 && length(dd) < uCut.w) discard;
   }
+#endif
 
   float ndl = dot(N, uSunDir);
   vec3 sp = vWorld + N * 0.07 + uSunDir * 0.03;
