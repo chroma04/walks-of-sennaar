@@ -403,7 +403,8 @@ export class World {
     return null;
   }
 
-  // Spawn near block (0, 0)'s north gate, which is always on the connected network.
+  // Spawn near block (0, 0)'s north gate (or another, where that edge is walled
+  // off), which leads onto the network.
   spawnPoint(radius) {
     const b = this.blocks.get(key(0, 0));
     if (!b) return null;

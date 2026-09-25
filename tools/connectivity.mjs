@@ -1,12 +1,18 @@
 // Flood-fills the traveller's collision model over a square of blocks (both
-// layers: the ground and bridge decks) and reports terrace cells that should be
-// reachable but are not, and bridges nobody can get onto.
+// layers: the ground and bridge decks) from the centre block's spawn, and
+// checks it against the layout's own plot graph (tools/plotgraph.mjs): every
+// gate and bridge the plot graph reaches from the spawn must be walked to, and
+// terrace cells that should be reachable but are not, or that the flood gets
+// into although nothing leads there, are reported.
 //   node tools/connectivity.mjs [seed] [radiusInBlocks] [cx] [cz]
 
 import { Generator } from '../src/world/generator.js';
 import { World } from '../src/world/World.js';
 import { BLOCK, BLOCK_SIZE, CELL, K_BUILDING } from '../src/config.js';
+
+const N = BLOCK;
 import { RADIUS } from '../src/player/Player.js';
+import { plotGraph } from './plotgraph.mjs';
 
 globalThis.navigator ??= { hardwareConcurrency: 1 };
 const seed = +(process.argv[2] ?? 8);
@@ -32,9 +38,17 @@ const heights = new Float32Array(n * n * 2).fill(NaN);
 const seen = new Uint8Array(n * n * 2);
 const GROUND = -1e9; // a height hint that always picks the ground layer
 
-// start next to the centre block's north gate
+const structures = new Map();
+for (let bz = cz - R; bz <= cz + R; bz++) for (let bx = cx - R; bx <= cx + R; bx++) structures.set(`${bx},${bz}`, gen.structure(bx, bz));
+const graph = plotGraph(structures, R, cx, cz);
+const expected = (bx, bz, plot) => {
+  const k = graph.id(bx, bz, plot);
+  return k !== undefined && graph.find(k) === graph.spawn;
+};
+
+// start next to the centre block's north gate (or whichever it has)
 const S = gen.structure(cx, cz);
-const g = S.gates.find((q) => q.dir === 3);
+const g = S.gates.find((q) => q.dir === 3) || S.gates[0];
 let start = null;
 for (let r = 0; r < 12 && !start; r += 0.5) {
   for (let k = 0; k < 16 && !start; k++) {
@@ -84,10 +98,13 @@ while (q.length) {
 }
 console.log('flood', reached, 'nodes in', ((performance.now() - t1) / 1000).toFixed(1), 's');
 
-// every gate of every block must be reached; report reachable-plot cells that were not
+// every gate the plot graph reaches must be reached; report reachable-plot
+// cells that were not, and cells reached that nothing should lead to
 let bad = 0;
+let gatesExpected = 0;
 let missingCells = 0;
 let pockets = 0;
+let leaks = 0;
 let totalCells = 0;
 let totalBridges = 0;
 let crossed = 0;
@@ -95,6 +112,8 @@ for (let bz = cz - R; bz <= cz + R; bz++) {
   for (let bx = cx - R; bx <= cx + R; bx++) {
     const T = gen.structure(bx, bz);
     for (const gt of T.gates) {
+      if (!expected(bx, bz, T.plotId[gt.j * N + gt.i])) continue;
+      gatesExpected++;
       const gx = bx * BLOCK_SIZE + (gt.i + 0.5) * CELL;
       const gz = bz * BLOCK_SIZE + (gt.j + 0.5) * CELL;
       let ok = false;
@@ -112,6 +131,7 @@ for (let bz = cz - R; bz <= cz + R; bz++) {
     }
     const inner = Math.abs(bx - cx) < R && Math.abs(bz - cz) < R;
     for (const br of inner ? T.bridges : []) {
+      if (!expected(bx, bz, br.pa)) continue;
       totalBridges++;
       const c = br.cells[Math.floor(br.cells.length / 2)];
       const i = Math.round((bx * BLOCK_SIZE + ((c % BLOCK) + 0.5) * CELL - x0) / STEP);
@@ -121,8 +141,8 @@ for (let bz = cz - R; bz <= cz + R; bz++) {
     }
     for (let c = 0; c < BLOCK * BLOCK && inner; c++) {
       const P = T.plots[T.plotId[c]];
-      if (P.building || !P.reachable || T.kind[c] === K_BUILDING) continue;
-      totalCells++;
+      if (P.building || P.water || T.kind[c] === K_BUILDING) continue;
+      const want = expected(bx, bz, P.id);
       const ci = c % BLOCK;
       const cj = Math.floor(c / BLOCK);
       // lattice nodes strictly inside this cell
@@ -134,7 +154,16 @@ for (let bz = cz - R; bz <= cz + R; bz++) {
           nodes.push([i, j]);
         }
       }
-      if (nodes.some(([i, j]) => seen[idx(i, j, 0)])) continue;
+      const got = nodes.some(([i, j]) => seen[idx(i, j, 0)]);
+      if (!want) {
+        if (got) {
+          leaks++;
+          if (process.env.DEBUG && leaks <= 12) console.log('leak', bx, bz, 'cell', ci, cj, 'plot', P.id, 'level', P.level);
+        }
+        continue;
+      }
+      totalCells++;
+      if (got) continue;
       missingCells++;
       // a pocket: ground the traveller could stand on that the flood never entered
       const standable = nodes.some(([i, j]) => !Number.isNaN(world.standAt(x0 + i * STEP, z0 + j * STEP, RADIUS, null, GROUND)));
@@ -145,5 +174,6 @@ for (let bz = cz - R; bz <= cz + R; bz++) {
     }
   }
 }
-console.log(`gates missed: ${bad}; reachable-plot cells never visited: ${missingCells}/${totalCells}; standable pockets: ${pockets}; bridges walked: ${crossed}/${totalBridges}`);
+console.log(`walkable area reachable from the spawn: ${((100 * graph.spawnArea) / graph.walkArea).toFixed(1)}%`);
+console.log(`gates missed: ${bad}/${gatesExpected}; reachable-plot cells never visited: ${missingCells}/${totalCells}; standable pockets: ${pockets}; cells reached that nothing leads to: ${leaks}; bridges walked: ${crossed}/${totalBridges}`);
 process.exit(bad || crossed < totalBridges ? 1 : 0);

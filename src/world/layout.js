@@ -13,13 +13,20 @@
 // cascade of reaches and weirs, a stepwell) that is carved out first; the rest
 // of the block is cut by BSP around it. In wet districts the low ground floods.
 //
-// Connectivity guarantee: every block edge carries a "gate" cell whose level is a
-// pure function of that edge, so both blocks agree on it. Within a block, the
-// plots holding the four gates are joined by a spine whose levels stay inside
-// a two-level band holding every gate (gates span at most two levels, see
-// anchor()), so every spine step is climbable. The spine never runs through a set piece, which only
-// hangs off the ring of plots around it. All other terraces hang off the spine
-// as a tree. Hence the walkable world is one infinite connected component.
+// Connectivity, mostly: the ground rises into massifs and falls into basins,
+// with escarpments several levels high between plateaus (anchorField), and
+// that relief comes before reaching everywhere. Each block edge that can be
+// crossed carries a "gate" cell whose level is a pure function of that edge, so
+// both blocks agree on it; steep edges are often left as sheer walls, but every
+// block keeps its two easiest edges open (edgeOpen). Within a block, the plots
+// holding the gates are joined by a spine whose levels climb at most two or
+// three levels a step (spineLevels); gates too far apart in height for that
+// only lead into their own corner of the block. The spine never runs through
+// a set piece, which only hangs off the ring of plots around it. Other
+// terraces hang off the spine as a tree, except those standing well above or
+// below it, which may be left for nobody to reach. The open edges percolate,
+// so the walkable world is one endless network with dead ends, sealed
+// precincts and unreachable heights along it.
 
 import { BLOCK, CELL, LEVEL_H, STAIR_CELLS_PER_LEVEL, STEPS_PER_CELL, K_FLOOR, K_STAIR, K_BUILDING, K_LANDING, K_WATER, DX, DZ } from '../config.js';
 import { hash2, hash3, hashFloat, makeRng, valueNoise } from './rng.js';
@@ -32,36 +39,81 @@ const BRIDGE_CLEAR = 2 * LEVEL_H; // ground under a bridge lies at least this fa
 
 const clamp = (v, lo, hi) => Math.max(lo, Math.min(hi, v));
 
-// Continuous anchor height (in levels) over block coordinates. Lipschitz < 1 per
-// block (0.6 + 0.3, see valueNoise), so rounded anchors of neighbouring blocks
-// differ by at most one level.
+const smoothstep = (a, b, x) => {
+  const t = clamp((x - a) / (b - a), 0, 1);
+  return t * t * (3 - 2 * t);
+};
+
+// Continuous anchor height (in levels) over block coordinates: broad massifs
+// and basins, broken where the ground is craggy into plateaus a few levels
+// apart with sharp escarpments between them, plus local knolls. Neighbouring
+// blocks may differ by five levels or more, so not every block edge can be
+// crossed (see edgeGate).
+export const SCARP = 5; // levels between plateaus
 export function anchorField(seed, x, z) {
-  return 4.0 * valueNoise(seed ^ 0xa11ce, x / 20, z / 20) + 0.8 * valueNoise(seed ^ 0xbead, x / 8, z / 8);
+  const broad = 15 * valueNoise(seed ^ 0xa11ce, x / 18, z / 18) + 6 * valueNoise(seed ^ 0xbead, x / 6.5, z / 6.5);
+  const crag = smoothstep(-0.5, 0.05, valueNoise(seed ^ 0xc4a9, x / 6, z / 6));
+  const t = broad / SCARP;
+  const k = Math.floor(t);
+  const stepped = (k + smoothstep(0.45, 0.55, t - k)) * SCARP;
+  return broad + crag * (stepped - broad) + 1.2 * valueNoise(seed ^ 0x7e11, x / 3, z / 3);
 }
 
 export function anchor(seed, bx, bz) {
   return Math.round(anchorField(seed, bx, bz));
 }
 
+// How hard an edge is to cross: the anchor step across it, with some jitter.
+function edgeCost(seed, ex, ez, axis) {
+  const a = anchor(seed, ex, ez);
+  const b = axis === 0 ? anchor(seed, ex + 1, ez) : anchor(seed, ex, ez + 1);
+  return Math.abs(a - b) + 1.5 * hashFloat(seed ^ 0xc105, ex * 2 + axis, ez);
+}
+
+// The four edges of block (bx, bz) as [ex, ez, axis]: east, south, west, north.
+const edgesOf = (bx, bz) => [
+  [bx, bz, 0],
+  [bx, bz, 1],
+  [bx - 1, bz, 0],
+  [bx, bz - 1, 1],
+];
+
+// An edge is crossable unless it is a steep escarpment, or a closed wall now
+// and then. Every block keeps its two easiest edges open whatever their cost,
+// so no block is ever sealed off, and the open edges percolate into one
+// endless network with a few dead ends and unreachable heights along it.
+function edgeOpen(seed, ex, ez, axis) {
+  const cost = edgeCost(seed, ex, ez, axis);
+  const h = hashFloat(seed ^ 0x0be7, ex * 2 + axis, ez);
+  if (cost < 3 && h > 0.06) return true;
+  if (cost >= 3 && cost < 5.5 && h < 0.45) return true;
+  const other = axis === 0 ? [ex + 1, ez] : [ex, ez + 1];
+  for (const [bx, bz] of [[ex, ez], other]) {
+    const costs = edgesOf(bx, bz).map(([x, z, a]) => edgeCost(seed, x, z, a)).sort((p, q) => p - q);
+    if (cost <= costs[1]) return true;
+  }
+  return false;
+}
+
 function edgeGate(seed, ex, ez, axis) {
+  if (!edgeOpen(seed, ex, ez, axis)) return null;
   const h = hash3(seed ^ 0x6a7e, ex, ez, axis);
   const pos = 8 + (h % 16);
   const a = anchor(seed, ex, ez);
   const b = axis === 0 ? anchor(seed, ex + 1, ez) : anchor(seed, ex, ez + 1);
-  return { pos, level: (h >>> 8) & 1 ? a : b };
+  // on a slope the gate sits partway up, so both blocks share the climb
+  const t = ((h >>> 8) & 255) / 255;
+  return { pos, level: Math.abs(a - b) <= 1 ? (t < 0.5 ? a : b) : Math.round(a + (b - a) * (0.3 + 0.4 * t)) };
 }
 
 export function blockGates(seed, bx, bz) {
-  const e = edgeGate(seed, bx, bz, 0);
-  const w = edgeGate(seed, bx - 1, bz, 0);
-  const s = edgeGate(seed, bx, bz, 1);
-  const n = edgeGate(seed, bx, bz - 1, 1);
-  return [
-    { dir: 0, i: N - 1, j: e.pos, level: e.level },
-    { dir: 1, i: s.pos, j: N - 1, level: s.level },
-    { dir: 2, i: 0, j: w.pos, level: w.level },
-    { dir: 3, i: n.pos, j: 0, level: n.level },
-  ];
+  const [e, s, w, n] = edgesOf(bx, bz).map(([x, z, a]) => edgeGate(seed, x, z, a));
+  const gates = [];
+  if (e) gates.push({ dir: 0, i: N - 1, j: e.pos, level: e.level });
+  if (s) gates.push({ dir: 1, i: s.pos, j: N - 1, level: s.level });
+  if (w) gates.push({ dir: 2, i: 0, j: w.pos, level: w.level });
+  if (n) gates.push({ dir: 3, i: n.pos, j: 0, level: n.level });
+  return gates;
 }
 
 // ---------------------------------------------------------------------------
@@ -101,8 +153,8 @@ export function district(seed, bx, bz) {
 }
 
 function targetLevel(seed, gx, gz, rng, relief) {
-  const amp = 1.6 + 2.6 * relief;
-  const t = anchorField(seed, gx / N, gz / N) + amp * valueNoise(seed ^ 0x5eed, gx / 12, gz / 12) + (rng() - 0.5) * (1.2 + 1.8 * relief);
+  const amp = 2 + 3.4 * relief;
+  const t = anchorField(seed, gx / N, gz / N) + amp * valueNoise(seed ^ 0x5eed, gx / 12, gz / 12) + (rng() - 0.5) * (1.2 + 2.2 * relief);
   return Math.round(t);
 }
 
@@ -459,19 +511,7 @@ function build(seed, bx, bz, A, gates, D, program) {
       p = par;
     }
   }
-  // Spine levels stay within a two-level band that holds every gate, so each
-  // step along it is at most two levels. Where the gates agree the band still
-  // leaves room to rise or sink.
-  let spineSum = 0;
-  let spineN = 0;
-  for (const p of plots) if (p.spine && p.gate < 0) [spineSum, spineN] = [spineSum + p.target, spineN + 1];
-  const lo = clamp(Math.round(spineN ? spineSum / spineN : A) - 1, maxG - 2, minG);
-  for (const p of plots) {
-    if (!p.spine) continue;
-    if (p.gate >= 0) p.level = gates[p.gate].level;
-    else if (p.nearF) p.level = R;
-    else p.level = clamp(p.target, lo, lo + 2);
-  }
+  spineLevels(plots, tree, gates, R);
 
   // 3. buildings (and a few sunken wells) among the rest
   const dense = 1 - D.grain;
@@ -486,7 +526,11 @@ function build(seed, bx, bz, A, gates, D, program) {
     else if (r < pb + 0.1 && area >= 20 && !p.nearF) p.well = true;
   }
 
-  // 4. grow terraces off the spine; steep districts take bigger steps
+  // 4. grow terraces off the spine; steep districts take bigger steps. A plot
+  // may stand aloof: a terrace lying well above or below whoever reaches it
+  // first stays unlinked, for a neighbour nearer its height to take, or for
+  // nobody, and so keeps its own height (see below).
+  for (const p of plots) p.aloof = !p.nearF && p.ring === undefined && rng() < 0.2 + 0.45 * D.relief;
   const queue = plots.filter((p) => p.spine);
   const seen = new Set(queue);
   const ringLevel = new Map();
@@ -521,8 +565,9 @@ function build(seed, bx, bz, A, gates, D, program) {
         queue.push(q);
         continue;
       }
-      seen.add(q);
       const diff = q.target - p.level;
+      if (q.aloof && Math.abs(diff) >= 3) continue;
+      seen.add(q);
       let delta = clamp(diff, -1, 1);
       if (q.nearF && rng() < 0.7) delta = clamp(diff, -2, 2);
       else if (Math.abs(diff) >= 2 && rng() < 0.3 + 0.45 * D.relief) delta = Math.sign(diff) * (Math.abs(diff) >= 3 && rng() < 0.2 + 0.6 * D.relief ? 3 : 2);
@@ -534,14 +579,25 @@ function build(seed, bx, bz, A, gates, D, program) {
       queue.push(q);
     }
   }
-  // Terraces off the network sink below their surroundings: wells of shade.
+  // Terraces off the network sink below their surroundings, wells of shade,
+  // or where the ground rises stay up as hanging gardens nobody walks.
   for (const p of plots) {
     if (p.building || p.feature || seen.has(p)) continue;
     p.reachable = false;
     let low = Infinity;
-    for (const e of p.adj) if (!e.q.building && seen.has(e.q)) low = Math.min(low, e.q.level);
-    if (low === Infinity) low = p.target;
-    p.level = low - 1 - Math.floor(rng() * (p.well ? 3 : 2));
+    let high = -Infinity;
+    for (const e of p.adj) {
+      if (e.q.building || !seen.has(e.q)) continue;
+      low = Math.min(low, e.q.level);
+      high = Math.max(high, e.q.level);
+    }
+    if (low === Infinity) low = high = p.target;
+    if (!p.well && p.target >= high + 2 && !p.adj.some((e) => e.q.feature)) {
+      p.level = p.target;
+      p.raised = true;
+      continue;
+    }
+    p.level = low - 1 - Math.floor(rng() * ((p.well ? 3 : 2) + 2 * D.relief));
     // in wet districts these wells of shade fill with water (never two side by
     // side, nor against a set piece, where levels of water would meet unwalled)
     if (p.w >= 2 && p.d >= 2 && rng() < 0.9 * D.wet - 0.15 && !p.adj.some((e) => e.q.water || e.q.feature)) p.water = true;
@@ -647,6 +703,95 @@ function build(seed, bx, bz, A, gates, D, program) {
     bridges,
     failedLinks: failed,
   };
+}
+
+// Spine levels. Each gate plot is pinned to its gate's level, and every other
+// spine plot takes the level closest to its target that still lets each step
+// along the spine be climbed (two levels, or three where the gates demand it).
+// On a tree, pinned levels that are pairwise within reach along the tree leave
+// every plot a non-empty range (the ranges are intervals, pairwise
+// intersecting). Gates too far apart for that are let go one at a time, the
+// most outlying first: they still lead into the block, but only to the
+// terraces around them, not across it.
+function spineLevels(plots, tree, gates, R) {
+  const spine = plots.filter((p) => p.spine);
+  const nbr = new Map(spine.map((p) => [p, []]));
+  for (const p of spine) {
+    const par = tree.get(p);
+    if (par) {
+      nbr.get(p).push(par);
+      nbr.get(par).push(p);
+    }
+  }
+  const distFrom = (src) => {
+    const d = new Map([[src, 0]]);
+    const queue = [src];
+    while (queue.length) {
+      const p = queue.shift();
+      for (const q of nbr.get(p)) {
+        if (d.has(q)) continue;
+        d.set(q, d.get(p) + 1);
+        queue.push(q);
+      }
+    }
+    return d;
+  };
+  const pins = [];
+  for (const p of spine) {
+    if (p.gate < 0) continue;
+    p.level = gates.find((g) => g.dir === p.gate).level;
+    pins.push({ p, level: p.level, dist: distFrom(p) });
+  }
+  const ranges = (set, step) => {
+    const out = new Map();
+    for (const p of spine) {
+      let lo = -Infinity;
+      let hi = Infinity;
+      for (const g of set) {
+        const d = g.dist.get(p);
+        if (d === undefined) continue;
+        lo = Math.max(lo, g.level - step * d);
+        hi = Math.min(hi, g.level + step * d);
+      }
+      if (lo > hi) return null;
+      out.set(p, [lo, hi]);
+    }
+    return out;
+  };
+  let set = pins;
+  let step = 2;
+  let rg = ranges(set, 2);
+  while (!rg) {
+    rg = ranges(set, 3);
+    if (rg) {
+      step = 3;
+      break;
+    }
+    const med = [...set].sort((a, b) => a.level - b.level)[set.length >> 1].level;
+    const out = set.reduce((a, b) => (Math.abs(b.level - med) > Math.abs(a.level - med) ? b : a));
+    set = set.filter((g) => g !== out);
+    rg = ranges(set, 2);
+  }
+  const pinned = new Set(pins.map((g) => g.p));
+  const kept = new Set(set.map((g) => g.p));
+  const root = spine.find((p) => !tree.get(p));
+  const queue = [root];
+  const done = new Set([root]);
+  if (!pinned.has(root)) root.level = clamp(root.nearF ? R : root.target, ...rg.get(root).map((v) => clamp(v, -99, 99)));
+  while (queue.length) {
+    const p = queue.shift();
+    for (const q of nbr.get(p)) {
+      if (done.has(q)) continue;
+      done.add(q);
+      queue.push(q);
+      if (pinned.has(q)) continue;
+      let [lo, hi] = rg.get(q);
+      // a let-go gate's plot says nothing about its neighbours
+      if (!pinned.has(p) || kept.has(p)) [lo, hi] = [Math.max(lo, p.level - step), Math.min(hi, p.level + step)];
+      if (lo > hi) [lo, hi] = rg.get(q);
+      q.level = clamp(q.nearF ? R : q.target, lo, hi);
+    }
+  }
 }
 
 // Levels and links of a set piece, once the ring of plots around it is settled.
