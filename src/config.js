@@ -12,6 +12,7 @@ export const K_FLOOR = 0;
 export const K_STAIR = 1;
 export const K_BUILDING = 2;
 export const K_LANDING = 3;
+export const K_WATER = 4; // canal water: not walkable, rendered as a sunken surface
 
 // Direction vectors: 0 = +x, 1 = +z, 2 = -x, 3 = -z
 export const DX = [1, 0, -1, 0];

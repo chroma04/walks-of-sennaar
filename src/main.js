@@ -8,6 +8,7 @@ import { Input } from './player/Input.js';
 import { findPath } from './player/pathfind.js';
 import { PathFollower } from './player/follow.js';
 import { Ambience } from './audio/Ambience.js';
+import { Crowd } from './npc/Crowd.js';
 
 // World seed: #seed-123 (works everywhere, including sandboxed embeds), or ?seed=123
 function readSeed() {
@@ -37,6 +38,8 @@ const world = new World({
   onChange: () => renderer.markStaticDirty(),
 });
 const follower = new PathFollower(world, RADIUS);
+const crowd = new Crowd({ scene, material: renderer.worldMaterial, world });
+player.blocked = (x0, z0, x1, z1, y) => crowd.blocks(x0, z0, x1, z1, y);
 
 // target marker shown where a click sends the traveller
 const marker = (() => {
@@ -191,7 +194,7 @@ function frame(now) {
         const px = x + Math.cos(a) * r;
         const pz = z + Math.sin(a) * r;
         const h = world.standAt(px, pz, RADIUS);
-        if (!Number.isNaN(h) && world.onNetwork(px, pz)) {
+        if (!Number.isNaN(h) && world.onNetwork(px, pz, h)) {
           player.place(new THREE.Vector3(px, h, pz));
           rig.snapTo(player.group.position);
           follower.clear();
@@ -239,6 +242,7 @@ function frame(now) {
   }
 
   if (state !== 'loading') player.update(dt, desired, world);
+  if (state !== 'loading') crowd.update(dt, player);
 
   const mu = marker.material.uniforms.uAlpha;
   if (!follower.path) mu.value = Math.max(0, mu.value - dt * 2);
@@ -268,6 +272,7 @@ requestAnimationFrame(frame);
 window.__sennaar = {
   world,
   player,
+  crowd,
   rig,
   renderer,
   get state() {

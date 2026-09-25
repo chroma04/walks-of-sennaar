@@ -1,5 +1,5 @@
 import * as THREE from 'three';
-import { LAYER_WORLD, LAYER_DYNAMIC, LAYER_OVERLAY } from '../render/Renderer.js';
+import { LAYER_WORLD, LAYER_DYNAMIC, LAYER_OVERLAY, LAYER_NPC } from '../render/Renderer.js';
 
 // High, fixed-pitch third-person camera that trails the traveller like the
 // game's composed shots; yaw turns in 45 degree steps or freely by dragging.
@@ -9,6 +9,7 @@ export class CameraRig {
     this.camera.layers.enable(LAYER_WORLD);
     this.camera.layers.enable(LAYER_DYNAMIC);
     this.camera.layers.enable(LAYER_OVERLAY);
+    this.camera.layers.enable(LAYER_NPC);
     this.yaw = Math.PI * 0.2;
     this.targetYaw = this.yaw;
     this.pitch = 0.95;

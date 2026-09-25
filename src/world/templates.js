@@ -499,7 +499,7 @@ function urn(seed) {
   return b.freeze();
 }
 
-function devotee(seed, pose) {
+export function devotee(seed, pose) {
   const rng = makeRng(seed);
   const b = new GeoBuilder(1024);
   const tall = 1.0 + rng() * 0.12;
@@ -613,6 +613,98 @@ function bench() {
   return b.freeze();
 }
 
+// Domed pavilion (qubba): four pointed arches under a drum and a dome, 4 m
+// square, open so one can walk through.
+function pavilion() {
+  const b = new GeoBuilder(4096);
+  const H = 4.1;
+  const ow = 2.76;
+  const inner = pointedArch(ow, 2.0, 0.62, 8, 0).slice(2);
+  const outline = [[2, 0], [2, H], [-2, H], [-2, 0], [-ow / 2, 0], ...inner.slice().reverse(), [ow / 2, 0]];
+  b.m = M.STONE;
+  b.box(-2.15, 0, -2.15, 2.15, 0.14, 2.15, 0b110111);
+  for (let k = 0; k < 4; k++) {
+    b.withTransform(T.chain(T.rotY((k * Math.PI) / 2), T.translate(0, 0, 1.7)), () => {
+      b.m = M.STONE;
+      b.extrude(outline, [], -0.32, 0.32, { front: true, back: true, sides: true });
+      // striped voussoirs round the opening, outside face only
+      const r = 0.62 * ow;
+      const cx = ow / 2 - r;
+      const ta = Math.acos((r - ow / 2) / r);
+      let n = 0;
+      for (const side of [1, -1]) {
+        for (let q = 0; q < 5; q++) {
+          const a0 = (q / 5) * ta;
+          const a1 = ((q + 1) / 5) * ta;
+          const P = (a, rr) => [side * (cx + rr * Math.cos(a)), 2.0 + rr * Math.sin(a)];
+          const poly = [P(a0, r), P(a0, r + 0.3), P(a1, r + 0.3), P(a1, r)];
+          b.m = (n++ + (side > 0 ? 0 : 1)) % 2 === 0 ? M.STRIPE : M.CREAM;
+          b.extrude(side > 0 ? poly.slice().reverse() : poly, [], 0.32, 0.38, { front: true, sides: true });
+        }
+      }
+    });
+  }
+  b.m = M.STONE;
+  b.box(-2.18, H, -2.18, 2.18, H + 0.22, 2.18, 0b111111);
+  b.m = M.CREAM;
+  b.prism(circle(1.55, 8, 0, 0, Math.PI / 8), H + 0.22, H + 0.85, { top: true });
+  b.m = M.ROOF;
+  b.lathe([[1.45, 0], [1.52, 0.3], [1.4, 0.85], [1.08, 1.35], [0.62, 1.75], [0.18, 2.08], [0.0, 2.18]].map(([r, y]) => [r, y + H + 0.85]), 16);
+  b.m = M.GOLD;
+  const top = H + 0.85 + 2.1;
+  b.lathe([[0.1, top], [0.16, top + 0.2], [0.05, top + 0.45], [0.12, top + 0.62], [0.0, top + 1.05]], 8);
+  // a lamp hanging inside, well above head height
+  b.lathe([[0.0, 2.55], [0.2, 2.62], [0.24, 2.8], [0.12, 2.95], [0.02, 3.0]], 8);
+  b.m = M.DARK;
+  b.box(-0.015, 2.95, -0.015, 0.015, H, 0.015, 0b110011);
+  return b.freeze();
+}
+
+function obelisk(h, seed) {
+  const rng = makeRng(seed);
+  const b = new GeoBuilder(2048);
+  b.m = M.STONE;
+  b.box(-0.75, 0, -0.75, 0.75, 0.4, 0.75, 0b110111);
+  b.box(-0.6, 0.4, -0.6, 0.6, 1.35, 0.6, 0b110111);
+  b.box(-0.7, 1.35, -0.7, 0.7, 1.52, 0.7, 0b111111);
+  for (let k = 0; k < 4; k++) {
+    b.withTransform(T.rotY((k * Math.PI) / 2), () => {
+      b.m = M.GLYPH;
+      glyph(b, -0.22, 0.9, 0.6, 0.26, rng);
+      glyph(b, 0.22, 0.9, 0.6, 0.26, rng);
+    });
+  }
+  b.m = M.STONE;
+  const shaft = h - 2.4;
+  b.frustum(0, 1.52, 0, 0.86, 0.5, shaft, false);
+  b.m = M.GOLD;
+  b.frustum(0, 1.52 + shaft, 0, 0.5, 0.0, 0.85, false);
+  return b.freeze();
+}
+
+// Wall spout feeding a canal: origin at the wall foot on quay level, +Z out of
+// the wall. The stream falls to the water surface WATER_DROP below.
+function spout(drop) {
+  const b = new GeoBuilder(1024);
+  archFrame(b, 1.2, 1.25, 0.8, 0.14, 0.12, 0.35, M.DARK);
+  b.m = M.STONE;
+  b.box(-0.8, 0.2, 0, 0.8, 0.35, 0.3, 0b110111);
+  // the spout itself: a lip projecting from a boss
+  b.box(-0.26, 1.02, 0, 0.26, 1.4, 0.24, 0b110111);
+  b.box(-0.14, 1.06, 0.24, 0.14, 1.18, 0.62, 0b111111);
+  b.m = M.WHITE;
+  b.box(-0.09, -drop, 0.56, 0.09, 1.1, 0.66, 0b110111);
+  b.lathe([[0.45, -drop + 0.02], [0.3, -drop + 0.1], [0.0, -drop + 0.12]].map(([r, y]) => [r, y]), 10);
+  return b.freeze();
+}
+
+function bollard() {
+  const b = new GeoBuilder(256);
+  b.m = M.STONE;
+  b.lathe([[0.17, 0], [0.18, 0.1], [0.13, 0.22], [0.12, 0.55], [0.18, 0.64], [0.16, 0.74], [0.0, 0.78]], 10);
+  return b.freeze();
+}
+
 export function buildTemplates() {
   const t = {
     windowSingle: windowSingle(),
@@ -634,11 +726,13 @@ export function buildTemplates() {
     broadleaf: [7, 19, 29, 31].map((s) => broadleaf(s)),
     palm: [3, 13, 17, 43, 61].map((s) => palm(s)),
     urn: [5, 15, 25].map((s) => urn(s)),
-    devotee: [1, 2, 3].map((s) => devotee(s, 'stand')),
-    devoteeKneel: [4, 5].map((s) => devotee(s, 'kneel')),
     statue: [8, 9, 10].map((s) => statue(s)),
     bench: bench(),
     grandArch: [grandArch(false), grandArch(true)],
+    pavilion: pavilion(),
+    obelisks: [6, 7, 8, 9, 10, 11].map((h) => obelisk(h, h * 7 + 1)),
+    spout: spout(0.8),
+    bollard: bollard(),
     stripedArch: new Map(),
   };
   t.getStripedArch = (span) => {

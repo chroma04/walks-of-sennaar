@@ -1,9 +1,9 @@
 // Second generation phase: furnish terraces (cloisters, fountains, planters,
-// arcades, statues, devotees...) and record collision shapes. Needs read access
-// to neighbouring blocks' structure through look(i, j) for block-local cells
-// that may lie outside the block.
+// arcades, statues, shrines...), place where the devotees start out, and record
+// collision shapes. Needs read access to neighbouring blocks' structure through
+// look(i, j) for block-local cells that may lie outside the block.
 
-import { BLOCK, CELL, LEVEL_H, K_STAIR, K_BUILDING, K_LANDING, DX, DZ, M } from '../config.js';
+import { BLOCK, CELL, LEVEL_H, K_FLOOR, K_STAIR, K_BUILDING, K_LANDING, K_WATER, DX, DZ, M } from '../config.js';
 import { hash2, makeRng } from './rng.js';
 
 const N = BLOCK;
@@ -17,17 +17,27 @@ export function decorate(S, look) {
     floorMat: new Uint8Array(N * N),
     eblock: new Uint8Array(N * N),
     band0: [],
+    spawns: [], // devotees: [{ x, y, z, rot, mode, seed, count }]
   };
   const used = S.used.slice();
-  const ctx = { S, look, rng, out, used };
+  const ctx = { S, look, rng, out, used, abut: new Set() };
+  for (const b of S.bridges) ctx.abut.add(b.a).add(b.b);
 
   for (const P of S.plots) {
     if (P.building) decorateBuilding(ctx, P);
+    else if (P.water) decorateWater(ctx, P);
     else decorateTerrace(ctx, P);
   }
   decorateStairs(ctx);
+  decorateBridges(ctx);
+  procession(ctx);
   return out;
 }
+
+const hasDeck = (ctx, i, j) => {
+  const v = ctx.S.deck[j * N + i];
+  return v === v;
+};
 
 // ---------------------------------------------------------------------------
 
@@ -47,7 +57,9 @@ function sideInfo(ctx, P, d) {
     const nj = j + DZ[d];
     const n = ctx.look(ni, nj);
     let rel;
-    if (n.kind === K_STAIR || n.kind === K_LANDING) rel = 'stair';
+    if (n.deck === n.deck && Math.abs(n.deck - y) < 0.01) rel = 'stair';
+    else if (n.kind === K_WATER) rel = 'water';
+    else if (n.kind === K_STAIR || n.kind === K_LANDING) rel = 'stair';
     else if (n.kind === K_BUILDING || n.base > y + 1.5) rel = 'up';
     else if (n.base < y - 1.5) rel = 'down';
     else rel = 'same';
@@ -109,17 +121,24 @@ function decorateTerrace(ctx, P) {
     for (let k = 0; k < trees; k++) {
       const i = P.x0 + 1 + Math.floor(rng() * (P.w - 2));
       const j = P.z0 + 1 + Math.floor(rng() * (P.d - 2));
+      if (ctx.used[j * N + i] !== 0) continue;
       out.feats.push({ t: 'palm', x: (i + 0.5) * CELL, z: (j + 0.5) * CELL, y, pot: false, s: 0.9 + rng() * 0.5, seed: rng() * 1e6 });
     }
   }
 
-  let program = 'plaza';
-  if (P.reachable && P.w >= 9 && P.d >= 9 && !regionUsed(ctx, P.x0 + 1, P.z0 + 1, P.x1 - 1, P.z1 - 1) && rng() < 0.55) {
+  const F = ctx.S.feature;
+  let program = P.role || (P.nest < 0 ? 'parterre' : 'plaza');
+  if (program === 'plaza' && P.reachable && P.w >= 9 && P.d >= 9 && !regionUsed(ctx, P.x0 + 1, P.z0 + 1, P.x1 - 1, P.z1 - 1) && rng() < 0.55) {
     program = 'cloister';
     cloister(ctx, P, y);
   }
-
-  if (program !== 'cloister' && P.reachable) centrePiece(ctx, P, y);
+  // set pieces furnish themselves; the generic scatter below stays off them
+  const open = program === 'plaza';
+  if (program === 'summit' && P.reachable) shrine(ctx, P, y, F.shrine);
+  else if (program === 'court' && P.reachable) court(ctx, P, y, F.garden);
+  else if (program === 'parterre' && P.reachable) court(ctx, P, y, rng() < 0.55);
+  else if (program === 'quay') quay(ctx, P, y);
+  else if (open && P.reachable) centrePiece(ctx, P, y);
 
   // Walls rising from this terrace: planters, benches, doors, ground-floor windows.
   for (let d = 0; d < 4; d++) {
@@ -127,15 +146,15 @@ function decorateTerrace(ctx, P) {
     const out_ = (d + 2) % 4; // direction facing back into the plot
     for (const run of runs(s, (e) => e.rel === 'up' && e.wall >= LEVEL_H - 0.05)) {
       let doorAt = -1;
-      if (rng() < 0.5) {
+      if (rng() < (program === 'quay' ? 0.8 : 0.5)) {
         const cand = run.filter((e) => e.u !== 1);
         if (cand.length) doorAt = cand[Math.floor(rng() * cand.length)].t;
       }
       const planter = new Set();
-      if (program !== 'cloister' && P.reachable) {
+      if (program !== 'cloister' && program !== 'summit' && P.reachable) {
         for (let k = 0; k < run.length; k++) {
           const e = run[k];
-          if (e.t === doorAt || e.u !== 0 || rng() > 0.22) continue;
+          if (e.t === doorAt || e.u !== 0 || rng() > (program === 'tier' ? 0.3 : 0.22)) continue;
           let len = 0;
           const want = 2 + Math.floor(rng() * 2);
           while (k + len < run.length && len < want && run[k + len].u === 0 && run[k + len].t !== doorAt) len++;
@@ -150,7 +169,7 @@ function decorateTerrace(ctx, P) {
         if (e.u === 1) continue;
         const isDoor = e.t === doorAt;
         out.band0.push({ i: e.i, j: e.j, d, y, door: isDoor, low: planter.has(e.t), owner: [e.owner.bx, e.owner.bz, e.owner.plot] });
-        if (!isDoor && !planter.has(e.t) && e.u === 0 && P.reachable && rng() < 0.06) {
+        if (!isDoor && !planter.has(e.t) && e.u === 0 && P.reachable && program !== 'summit' && rng() < (program === 'quay' ? 0.12 : 0.06)) {
           // bench against the wall
           const [cx, cz] = edgeCentre(e.i, e.j, d);
           const inset = 0.45;
@@ -161,11 +180,13 @@ function decorateTerrace(ctx, P) {
     }
   }
 
-  // Arcade screens along drops, 2 m in from the balustrade.
-  if (program !== 'cloister' && P.reachable) {
+  // Arcade screens along drops, 2 m in from the balustrade. A ziggurat may
+  // wrap one of its tiers in them.
+  const colonnade = program === 'tier' && F.colonnade === P.tier;
+  if ((open || colonnade) && P.reachable) {
     for (let d = 0; d < 4; d++) {
       for (const run of runs(sides[d], (e) => e.rel === 'down' && e.u === 0)) {
-        if (run.length < 4 || rng() > 0.32) continue;
+        if (run.length < (colonnade ? 2 : 4) || rng() > (colonnade ? 1 : 0.32)) continue;
         const inner = run.every((e) => {
           const ii = e.i - DX[d];
           const jj = e.j - DZ[d];
@@ -174,8 +195,23 @@ function decorateTerrace(ctx, P) {
         if (!inner) continue;
         const a = run[0];
         const b = run[run.length - 1];
-        const [ax, az] = arcadeEnd(a.i, a.j, d, -1);
-        const [bx, bz] = arcadeEnd(b.i, b.j, d, 1);
+        let [ax, az] = arcadeEnd(a.i, a.j, d, -1);
+        let [bx, bz] = arcadeEnd(b.i, b.j, d, 1);
+        // end columns never overhang a stair or a drop beyond the run
+        const ux = DZ[d] !== 0 ? 1 : 0;
+        const uz = DX[d] !== 0 ? 1 : 0;
+        const level = (i, j) => {
+          const n = ctx.look(i, j);
+          return n.kind !== K_STAIR && n.kind !== K_BUILDING && Math.abs(n.base - y) < 0.01;
+        };
+        if (!level(a.i - ux, a.j - uz) || !level(a.i - ux - DX[d], a.j - uz - DZ[d])) {
+          ax += ux * 0.4;
+          az += uz * 0.4;
+        }
+        if (!level(b.i + ux, b.j + uz) || !level(b.i + ux - DX[d], b.j + uz - DZ[d])) {
+          bx -= ux * 0.4;
+          bz -= uz * 0.4;
+        }
         out.feats.push({ t: 'arcade', ax, az, bx, bz, y, d });
         const len = Math.hypot(bx - ax, bz - az);
         const n = Math.round(len / CELL);
@@ -191,12 +227,13 @@ function decorateTerrace(ctx, P) {
     }
   }
 
-  // Potted plants and benches along the balustrades
-  if (program !== 'cloister' && P.reachable) {
+  // Potted plants and benches along the balustrades (in step on a ziggurat)
+  if ((open || program === 'tier' || program === 'court') && P.reachable) {
+    const tierPots = program === 'tier' ? rng() < 0.6 : false;
     for (let d = 0; d < 4; d++) {
       for (const run of runs(sides[d], (e) => e.rel === 'down')) {
-        if (run.length < 3 || rng() > 0.5) continue;
-        const benches = rng() < 0.3;
+        if (run.length < 3 || rng() > (program === 'tier' ? (tierPots ? 1 : 0) : 0.5)) continue;
+        const benches = program !== 'tier' && rng() < 0.3;
         for (let k = 1; k < run.length - 1; k += 2 + (rng() < 0.5 ? 1 : 0)) {
           const e = run[k];
           if (ctx.used[e.j * N + e.i] !== 0) continue;
@@ -232,7 +269,7 @@ function decorateTerrace(ctx, P) {
     const rb = sides[db].find((e) => e.i === i && e.j === j)?.rel;
     const cx = (i + 0.5) * CELL + DX[da] * 0.35 + DX[db] * 0.35;
     const cz = (j + 0.5) * CELL + DZ[da] * 0.35 + DZ[db] * 0.35;
-    if (ra === 'down' && rb === 'down' && rng() < 0.45) {
+    if (ra === 'down' && rb === 'down' && !ctx.abut.has(j * N + i) && !hasDeck(ctx, i, j) && (program === 'tier' || rng() < 0.45)) {
       // pinnacle pier on the outer corner of the balustrade
       const px = (i + 0.5 + DX[da] * 0.5 + DX[db] * 0.5) * CELL - (DX[da] + DX[db]) * 0.16;
       const pz = (j + 0.5 + DZ[da] * 0.5 + DZ[db] * 0.5) * CELL - (DZ[da] + DZ[db]) * 0.16;
@@ -258,7 +295,7 @@ function decorateTerrace(ctx, P) {
   }
 
   // Big plazas get a scatter of potted palms, urns and benches.
-  if (program !== 'cloister' && P.reachable && area >= 42) {
+  if (open && P.reachable && area >= 42) {
     const want = Math.floor(area / 36) + (rng() < 0.5 ? 1 : 0);
     let placed = 0;
     for (let tries = 0; tries < want * 6 && placed < want; tries++) {
@@ -287,26 +324,30 @@ function decorateTerrace(ctx, P) {
     }
   }
 
-  // Devotees: silent, still figures.
-  if (P.reachable && area >= 20 && rng() < 0.24) {
+  // Devotees: where they start their day. Most wander, some stand or kneel.
+  if (P.reachable && area >= 20 && program !== 'summit' && rng() < (program === 'court' ? 0.8 : 0.22)) {
     const count = 1 + Math.floor(rng() * 3);
     const cxm = ((P.x0 + P.x1) / 2) * CELL;
     const czm = ((P.z0 + P.z1) / 2) * CELL;
     for (let k = 0; k < count; k++) {
-      for (let tries = 0; tries < 8; tries++) {
-        const i = P.x0 + 1 + Math.floor(rng() * Math.max(1, P.w - 2));
-        const j = P.z0 + 1 + Math.floor(rng() * Math.max(1, P.d - 2));
-        if (!inside(P, i, j) || ctx.used[j * N + i] !== 0) continue;
-        const x = (i + 0.3 + rng() * 0.4) * CELL;
-        const z = (j + 0.3 + rng() * 0.4) * CELL;
-        const face = Math.atan2(cxm - x, czm - z) + (rng() - 0.5) * 1.2;
-        out.feats.push({ t: 'devotee', x, z, y, rot: face, pose: rng() < 0.3 ? 'kneel' : 'stand', seed: rng() * 1e6 });
-        out.circles.push([x, z, 0.38, y]);
-        ctx.used[j * N + i] = 3;
-        break;
-      }
+      const c = freeSpot(ctx, P, 8);
+      if (!c) continue;
+      const x = (c[0] + 0.3 + rng() * 0.4) * CELL;
+      const z = (c[1] + 0.3 + rng() * 0.4) * CELL;
+      const face = Math.atan2(cxm - x, czm - z) + (rng() - 0.5) * 1.2;
+      const r = rng();
+      out.spawns.push({ x, y, z, rot: face, mode: r < 0.6 ? 'wander' : r < 0.82 ? 'still' : 'pray', seed: Math.floor(rng() * 1e6) });
     }
   }
+}
+
+function freeSpot(ctx, P, tries) {
+  for (let t = 0; t < tries; t++) {
+    const i = P.x0 + Math.floor(ctx.rng() * P.w);
+    const j = P.z0 + Math.floor(ctx.rng() * P.d);
+    if (ctx.used[j * N + i] === 0 && !hasDeck(ctx, i, j)) return [i, j];
+  }
+  return null;
 }
 
 function edgeCentre(i, j, d) {
@@ -438,20 +479,23 @@ function cloister(ctx, P, y) {
   out.feats.push({ t: 'cloister', x0: X0, z0: Z0, x1: X1, z1: Z1, y, ent, seed: rng() * 1e6 });
 }
 
-function centrePiece(ctx, P, y) {
+function centrePiece(ctx, P, y, forced = null, at = null) {
   const { rng, out } = ctx;
   const r = rng();
-  let type;
-  if (P.w >= 7 && P.d >= 7 && r < 0.13) type = 'statue';
-  else if (P.w >= 7 && P.d >= 7 && r < 0.26) type = 'pool';
-  else if (P.w >= 7 && P.d >= 7 && r < 0.38) type = 'garch';
+  let type = forced;
+  if (type) {
+    // chosen by the caller
+  } else if (P.w >= 7 && P.d >= 7 && r < 0.12) type = 'statue';
+  else if (P.w >= 7 && P.d >= 7 && r < 0.24) type = 'pool';
+  else if (P.w >= 7 && P.d >= 7 && r < 0.35) type = 'garch';
+  else if (P.w >= 6 && P.d >= 6 && r < 0.43) type = 'obelisk';
   else if (P.w >= 5 && P.d >= 5 && r < 0.64) type = 'fountain';
   else if (P.w >= 5 && P.d >= 5 && r < 0.76) type = 'palmbed';
   else if (P.w >= 5 && P.d >= 5 && r < 0.88) type = 'sarchfree';
-  else return;
+  else return false;
   const size = type === 'pool' ? 3 : type === 'sarchfree' ? 1 : type === 'garch' ? 4 : 2;
-  const ci = Math.round((P.x0 + P.x1) / 2);
-  const cj = Math.round((P.z0 + P.z1) / 2);
+  const ci = at ? at[0] : Math.round((P.x0 + P.x1) / 2);
+  const cj = at ? at[1] : Math.round((P.z0 + P.z1) / 2);
   const offsets = [[0, 0], [1, 0], [-1, 0], [0, 1], [0, -1], [1, 1], [-1, -1], [1, -1], [-1, 1]];
   for (const [oi, oj] of offsets) {
     const i0 = ci + oi - Math.floor(size / 2);
@@ -467,6 +511,9 @@ function centrePiece(ctx, P, y) {
       const face = rng() < 0.5 ? (rng() < 0.5 ? 0 : Math.PI) : rng() < 0.5 ? Math.PI / 2 : -Math.PI / 2;
       out.feats.push({ t: 'statue', x, z, y, rot: face, seed: rng() * 1e6 });
       out.boxes.push([x - 1.05, z - 1.05, x + 1.05, z + 1.05, y]);
+    } else if (type === 'obelisk') {
+      out.feats.push({ t: 'obelisk', x, z, y, h: 6 + rng() * 3, seed: rng() * 1e6 });
+      out.boxes.push([x - 0.75, z - 0.75, x + 0.75, z + 0.75, y]);
     } else if (type === 'pool') {
       out.feats.push({ t: 'pool', x, z, y, r: 2.4 });
       out.circles.push([x, z, 2.5, y]);
@@ -487,7 +534,7 @@ function centrePiece(ctx, P, y) {
         out.boxes.push([x + ox - hx, z + oz - hz, x + ox + hx, z + oz + hz, y]);
       }
       mark(ctx, i0, j0, i1, j1, 2);
-      return;
+      return true;
     } else if (type === 'sarchfree') {
       const alongX = rng() < 0.5;
       out.feats.push({ t: 'sarch', x: (ci + 0.5) * CELL, z: (cj + 0.5) * CELL, y, rot: alongX ? 0 : Math.PI / 2, span: 2.2 });
@@ -499,12 +546,128 @@ function centrePiece(ctx, P, y) {
         out.boxes.push([px + ox - 0.3, pz + oz - 0.3, px + ox + 0.3, pz + oz + 0.3, y]);
       }
       mark(ctx, ci, cj, ci + 1, cj + 1, 2);
-      return;
+      return true;
     }
     mark(ctx, i0, j0, i1, j1, 3);
     // keep a clear ring around it
     for (let j = j0 - 1; j < j1 + 1; j++) for (let i = i0 - 1; i < i1 + 1; i++) if (ctx.used[j * N + i] === 0) ctx.used[j * N + i] = 2;
+    return true;
+  }
+  return false;
+}
+
+// The top of a ziggurat: a domed pavilion, the sun idol or an obelisk, with
+// devotees kneeling round it.
+function shrine(ctx, P, y, kind) {
+  const { rng, out } = ctx;
+  const x = ((P.x0 + P.x1) / 2) * CELL;
+  const z = ((P.z0 + P.z1) / 2) * CELL;
+  const ci = Math.floor((P.x0 + P.x1) / 2);
+  const cj = Math.floor((P.z0 + P.z1) / 2);
+  if (kind === 'pavilion') {
+    out.feats.push({ t: 'pavilion', x, z, y, seed: rng() * 1e6 });
+    for (const sx of [-1, 1]) for (const sz of [-1, 1]) out.boxes.push([x + sx * 1.7 - 0.32, z + sz * 1.7 - 0.32, x + sx * 1.7 + 0.32, z + sz * 1.7 + 0.32, y]);
+  } else if (kind === 'statue') {
+    const faces = ctx.S.feature.axes;
+    const rot = [Math.PI / 2, 0, -Math.PI / 2, Math.PI][faces[0]];
+    out.feats.push({ t: 'statue', x, z, y, rot, seed: rng() * 1e6 });
+    out.boxes.push([x - 1.05, z - 1.05, x + 1.05, z + 1.05, y]);
+  } else {
+    out.feats.push({ t: 'obelisk', x, z, y, h: 8 + rng() * 3, seed: rng() * 1e6 });
+    out.boxes.push([x - 0.75, z - 0.75, x + 0.75, z + 0.75, y]);
+  }
+  mark(ctx, ci - 1, cj - 1, ci + 1, cj + 1, 3);
+  // urns on the summit's corners
+  for (const [i, j] of [[P.x0, P.z0], [P.x1 - 1, P.z0], [P.x1 - 1, P.z1 - 1], [P.x0, P.z1 - 1]]) {
+    if (ctx.used[j * N + i] !== 0) continue;
+    const ux = (i + 0.5) * CELL + (i === P.x0 ? -0.3 : 0.3);
+    const uz = (j + 0.5) * CELL + (j === P.z0 ? -0.3 : 0.3);
+    out.feats.push({ t: 'urns', x: ux, z: uz, y, n: 1, seed: rng() * 1e6 });
+    out.circles.push([ux, uz, 0.45, y]);
+    ctx.used[j * N + i] = 3;
+  }
+  // kneeling devotees facing it
+  const n = 2 + Math.floor(rng() * 3);
+  for (let k = 0; k < n; k++) {
+    const a = rng() * Math.PI * 2;
+    const r = 3.1 + rng() * 0.6;
+    const px = x + Math.sin(a) * r;
+    const pz = z + Math.cos(a) * r;
+    const i = Math.floor(px / CELL);
+    const j = Math.floor(pz / CELL);
+    if (!inside(P, i, j) || ctx.used[j * N + i] !== 0) continue;
+    out.spawns.push({ x: px, y, z: pz, rot: a + Math.PI, mode: 'pray', seed: Math.floor(rng() * 1e6) });
+    ctx.used[j * N + i] = 3;
+  }
+}
+
+// A sunken court: two matching pieces either side of its middle (clear of any
+// bridge overhead), or an orchard of palms on a lawn.
+function court(ctx, P, y, garden) {
+  const { rng, out } = ctx;
+  if (garden) {
+    for (let j = P.z0 + 1; j < P.z1 - 1; j++) {
+      for (let i = P.x0 + 1; i < P.x1 - 1; i++) {
+        const c = j * N + i;
+        if (ctx.used[c] === 0 && !hasDeck(ctx, i, j)) out.floorMat[c] = M.GRASS;
+      }
+    }
+    const ox = P.x0 + 2;
+    const oz = P.z0 + 2;
+    for (let j = oz; j < P.z1 - 2; j += 3) {
+      for (let i = ox; i < P.x1 - 2; i += 3) {
+        if (regionUsed(ctx, i - 1, j - 1, i + 2, j + 2, true) || hasDeck(ctx, i, j)) continue;
+        const x = (i + 0.5) * CELL;
+        const z = (j + 0.5) * CELL;
+        out.feats.push({ t: 'palm', x, z, y, pot: false, s: 1.0 + rng() * 0.45, seed: rng() * 1e6 });
+        out.circles.push([x, z, 0.35, y]);
+        ctx.used[j * N + i] = 3;
+      }
+    }
     return;
+  }
+  const alongX = P.w >= P.d;
+  const type = rng.pick(['pool', 'fountain', 'palmbed', 'statue', 'obelisk']);
+  const ci = Math.round((P.x0 + P.x1) / 2);
+  const cj = Math.round((P.z0 + P.z1) / 2);
+  const q = Math.round((alongX ? P.w : P.d) / 4);
+  const spots = alongX ? [[P.x0 + q, cj], [P.x1 - q, cj]] : [[ci, P.z0 + q], [ci, P.z1 - q]];
+  let placed = 0;
+  for (const at of spots) if (centrePiece(ctx, P, y, type, at)) placed++;
+  if (!placed) centrePiece(ctx, P, y, 'fountain');
+}
+
+// Quays: mooring posts along the water.
+function quay(ctx, P, y) {
+  const { out } = ctx;
+  for (let d = 0; d < 4; d++) {
+    const s = sideInfo(ctx, P, d);
+    s.forEach((e, k) => {
+      if (e.rel !== 'water' || k % 3 !== 1 || e.u !== 0 || hasDeck(ctx, e.i, e.j)) return;
+      const [cx, cz] = edgeCentre(e.i, e.j, d);
+      const x = cx - DX[d] * 0.35;
+      const z = cz - DZ[d] * 0.35;
+      out.feats.push({ t: 'bollard', x, z, y });
+      out.circles.push([x, z, 0.22, y]);
+    });
+  }
+}
+
+// Canal water: a spout at each end wall.
+function decorateWater(ctx, P) {
+  const { out, S } = ctx;
+  const y = P.level * LEVEL_H;
+  const alongX = S.feature && S.feature.alongX;
+  const ends = alongX ? [[P.x0, 2], [P.x1 - 1, 0]] : [[P.z0, 3], [P.z1 - 1, 1]];
+  for (const [e, d] of ends) {
+    const x = alongX ? (d === 0 ? P.x1 * CELL : P.x0 * CELL) : ((P.x0 + P.x1) / 2) * CELL;
+    const z = alongX ? ((P.z0 + P.z1) / 2) * CELL : d === 1 ? P.z1 * CELL : P.z0 * CELL;
+    // the wall at this end must rise well above the quays
+    const ni = alongX ? e + DX[d] : Math.floor((P.x0 + P.x1) / 2);
+    const nj = alongX ? Math.floor((P.z0 + P.z1) / 2) : e + DZ[d];
+    const n = ctx.look(ni, nj);
+    if (n.base < y + 2.4) continue;
+    out.feats.push({ t: 'spout', x, z, y, rot: dirAngle((d + 2) % 4) });
   }
 }
 
@@ -568,4 +731,65 @@ function decorateStairs(ctx) {
       out.boxes.push([px - 0.3, pz - 0.3, px + 0.3, pz + 0.3, s.hT]);
     }
   }
+}
+
+// Bridge piers are obstacles for whoever walks underneath; some bridges get a
+// horseshoe arch over each entrance.
+function decorateBridges(ctx) {
+  const { S, out } = ctx;
+  for (const br of S.bridges) {
+    const ax = DX[br.d];
+    const az = DZ[br.d];
+    const sx = br.i0 * CELL + (ax ? 0 : CELL / 2);
+    const sz = br.j0 * CELL + (az ? 0 : CELL / 2);
+    for (const t of br.piers) {
+      const px = sx + ax * t * CELL;
+      const pz = sz + az * t * CELL;
+      for (const k of [t - 1, t]) {
+        const c = br.cells[k];
+        if (S.kind[c] === K_WATER) continue;
+        const hx = ax ? 0.36 : 1.02;
+        const hz = az ? 0.36 : 1.02;
+        out.boxes.push([px - hx, pz - hz, px + hx, pz + hz, S.base[c]]);
+      }
+    }
+    if (!br.gate) continue;
+    for (const [end, dir] of [[br.a, br.d], [br.b, (br.d + 2) % 4]]) {
+      const i = end % N;
+      const j = Math.floor(end / N);
+      const lat = (dir + 1) % 4;
+      const ok = [1, -1].every((sg) => {
+        const li = i + DX[lat] * sg;
+        const lj = j + DZ[lat] * sg;
+        if (li < 0 || lj < 0 || li >= N || lj >= N) return false;
+        const c = lj * N + li;
+        return S.kind[c] === K_FLOOR && Math.abs(S.base[c] - br.y) < 0.01 && ctx.used[c] !== 1;
+      });
+      if (!ok) continue;
+      const [ex, ez] = edgeCentre(i, j, dir);
+      const cx = ex - DX[dir] * 0.45;
+      const cz = ez - DZ[dir] * 0.45;
+      const rot = dirAngle(dir);
+      out.feats.push({ t: 'sarch', x: cx, z: cz, y: br.y, rot, span: 2.2 });
+      const px = Math.cos(rot);
+      const pz = -Math.sin(rot);
+      for (const sg of [-1, 1]) {
+        const qx = cx + px * sg * 1.35;
+        const qz = cz + pz * sg * 1.35;
+        out.boxes.push([qx - 0.3, qz - 0.3, qx + 0.3, qz + 0.3, br.y]);
+      }
+    }
+  }
+}
+
+// Now and then a line of devotees walks the terraces together.
+function procession(ctx) {
+  const { S, rng, out } = ctx;
+  if (rng() > 0.32) return;
+  const cands = S.plots.filter((P) => P.reachable && !P.building && !P.water && P.w * P.d >= 24);
+  if (!cands.length) return;
+  const P = rng.pick(cands);
+  const c = freeSpot(ctx, P, 12);
+  if (!c) return;
+  out.spawns.push({ x: (c[0] + 0.5) * CELL, y: P.level * LEVEL_H, z: (c[1] + 0.5) * CELL, rot: rng() * Math.PI * 2, mode: 'lead', count: 3 + Math.floor(rng() * 3), seed: Math.floor(rng() * 1e6) });
 }

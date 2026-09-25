@@ -5,6 +5,7 @@ import { worldVertex, worldFragment, depthVertex, depthFragment, fullscreenVerte
 export const LAYER_WORLD = 1;
 export const LAYER_DYNAMIC = 2;
 export const LAYER_OVERLAY = 3;
+export const LAYER_NPC = 4;
 
 const BIAS = new THREE.Matrix4().set(0.5, 0, 0, 0.5, 0, 0.5, 0, 0.5, 0, 0, 0.5, 0.5, 0, 0, 0, 1);
 
@@ -27,6 +28,8 @@ export class Renderer {
     this.staticRT = depthTarget(this.staticSize);
     this.dynSize = 512;
     this.dynRT = depthTarget(this.dynSize);
+    // devotees move, so they get their own map in the static light frame
+    this.npcRT = depthTarget(this.staticSize);
     this.staticCam = new THREE.OrthographicCamera(-50, 50, 50, -50, 1, 400);
     this.staticCam.layers.set(LAYER_WORLD);
     this.dynCam = new THREE.OrthographicCamera(-3.5, 3.5, 3.5, -3.5, 1, 400);
@@ -53,6 +56,7 @@ export class Renderer {
       uDynShadowMap: { value: this.dynRT.depthTexture },
       uDynShadowMatrix: { value: this.dynMatrix },
       uDynShadowTexel: { value: new THREE.Vector2(1 / this.dynSize, 1 / this.dynSize) },
+      uNpcShadowMap: { value: this.npcRT.depthTexture },
       uFocusY: { value: 0 },
       uTime: { value: 0 },
       uCut: { value: new THREE.Vector4(0, 0, 0, 0) },
@@ -212,6 +216,13 @@ export class Renderer {
       r.clear();
       r.render(scene, this.staticCam);
     }
+    // devotees' shadows, in the same frame as the static map
+    this.staticCam.layers.set(LAYER_NPC);
+    scene.overrideMaterial = this.depthMaterial;
+    r.setRenderTarget(this.npcRT);
+    r.clear();
+    r.render(scene, this.staticCam);
+    this.staticCam.layers.set(LAYER_WORLD);
     // dynamic (traveller) shadow
     this.placeLightCam(this.dynCam, info.player, 3.5, this.dynSize);
     this.dynMatrix.multiplyMatrices(BIAS, this.dynCam.projectionMatrix).multiply(this.dynCam.matrixWorldInverse);

@@ -47,6 +47,7 @@ export class Generator {
         bx: bx + ox,
         bz: bz + oz,
         stair: si >= 0 ? S.stairs[si] : null,
+        deck: S.deck[c],
         ox: ox * BLOCK_SIZE,
         oz: oz * BLOCK_SIZE,
       };
@@ -71,14 +72,16 @@ export class Generator {
       stairOf: S.stairOf,
       stairs,
       eblock,
+      deck: S.deck,
+      dblock: S.dblock,
       circles: new Float32Array(D.circles.flat()),
       boxes: new Float32Array(D.boxes.flat()),
       gates: S.gates.map((g) => ({ i: g.i, j: g.j, dir: g.dir, level: g.level })),
     };
     let fountains = [];
-    for (const f of D.feats) if (f.t === 'fountain' || f.t === 'pool') fountains.push(f.x, f.y, f.z);
+    for (const f of D.feats) if (f.t === 'fountain' || f.t === 'pool' || f.t === 'spout') fountains.push(f.x, f.y, f.z);
     fountains = new Float32Array(fountains);
-    return { bx, bz, geo, walk, fountains, failed: S.failedLinks };
+    return { bx, bz, geo, walk, fountains, spawns: D.spawns, program: S.program, failed: S.failedLinks };
   }
 }
 
@@ -94,5 +97,5 @@ function pack(g) {
 export function transferables(res) {
   const g = res.geo;
   const w = res.walk;
-  return [g.pos.buffer, g.nor.buffer, g.uv.buffer, g.mat.buffer, g.idx.buffer, w.reach.buffer, w.kind.buffer, w.base.buffer, w.stairOf.buffer, w.stairs.buffer, w.eblock.buffer, w.circles.buffer, w.boxes.buffer, res.fountains.buffer];
+  return [g.pos.buffer, g.nor.buffer, g.uv.buffer, g.mat.buffer, g.idx.buffer, w.reach.buffer, w.kind.buffer, w.base.buffer, w.stairOf.buffer, w.stairs.buffer, w.eblock.buffer, w.deck.buffer, w.dblock.buffer, w.circles.buffer, w.boxes.buffer, res.fountains.buffer];
 }

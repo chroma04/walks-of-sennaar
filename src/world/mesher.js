@@ -1,10 +1,10 @@
 // Turns a block's structure + decoration into one merged mesh, and finalises the
 // collision edge flags (balustrades, stair cheeks).
 
-import { BLOCK, CELL, LEVEL_H, STEPS_PER_CELL, K_FLOOR, K_STAIR, K_BUILDING, K_LANDING, DX, DZ, M } from '../config.js';
+import { BLOCK, CELL, LEVEL_H, STEPS_PER_CELL, K_FLOOR, K_STAIR, K_BUILDING, K_LANDING, K_WATER, DX, DZ, M } from '../config.js';
 import { GeoBuilder, T, circle } from './geometry.js';
 import { hash3 } from './rng.js';
-import { stairRamp } from './layout.js';
+import { stairRamp, WATER_DROP, DECK_T } from './layout.js';
 import { dirAngle } from './decorate.js';
 import { COLUMN_H } from './templates.js';
 
@@ -41,6 +41,7 @@ export function meshBlock(S, D, look, tp) {
     const k = S.kind[c];
     if (k === K_FLOOR || k === K_LANDING) return D.floorMat[c] === M.GRASS ? M.GRASS : M.STONE;
     if (k === K_BUILDING && plotOf(c).roof === 'flat') return M.STONE;
+    if (k === K_WATER) return M.WATER;
     return -1;
   };
   for (let j = 0; j < N; j++) {
@@ -87,6 +88,8 @@ export function meshBlock(S, D, look, tp) {
         const n = look(i + DX[d], j + DZ[d]);
         const hN = n.base;
         if (hC <= hN + 0.01) continue;
+        // storeys over canal water count from the quays
+        const hS = n.kind === K_WATER ? hN + WATER_DROP : hN;
         const [ex, ez] = edgeCentre(i, j, d);
         const stairish = kc === K_STAIR || kc === K_LANDING || n.kind === K_STAIR || n.kind === K_LANDING;
         b.withTransform(T.chain(T.translate(ex, 0, ez), T.rotY(dirAngle(d))), () => {
@@ -95,16 +98,17 @@ export function meshBlock(S, D, look, tp) {
           if (kc === K_STAIR) return;
           const h = hC - hN;
           if (h > 0.9) b.box(-1.06, hC - 0.34, 0, 1.06, hC, 0.11, 0b010111);
-          if (stairish || h < LEVEL_H - 0.05) return;
-          const bands = Math.round(h / LEVEL_H);
+          const hs = hC - hS;
+          if (stairish || hs < LEVEL_H - 0.05) return;
+          const bands = Math.round(hs / LEVEL_H);
           for (let k = 1; k < bands; k++) {
-            const y = hN + k * LEVEL_H;
+            const y = hS + k * LEVEL_H;
             b.box(-1.03, y - 0.07, 0, 1.03, y + 0.07, 0.06, 0b011111);
           }
           const first = n.kind === K_FLOOR ? 1 : 0;
           const plot = S.plotId[c];
           for (let k = first; k < bands; k++) {
-            const yb = hN + k * LEVEL_H;
+            const yb = hS + k * LEVEL_H;
             const pat = wallPattern(S.bx, S.bz, plot, d, Math.round(yb / LEVEL_H));
             emitBand(pat, along(i, j, d), yb);
           }
@@ -150,6 +154,7 @@ export function meshBlock(S, D, look, tp) {
       for (let d = 0; d < 4; d++) {
         const n = look(i + DX[d], j + DZ[d]);
         if (n.kind === K_BUILDING && n.base > top - 0.01) continue;
+        if (n.deck === n.deck && Math.abs(n.deck - top) < 0.01) continue; // onto a bridge
         if (top - edgeTopOf(n, i, j, d) <= 1.0) continue;
         railed[c] |= 1 << d;
       }
@@ -189,8 +194,9 @@ export function meshBlock(S, D, look, tp) {
   }
   for (const [px, py, pz] of posts.values()) b.appendTemplate(tp.balPost, T.translate(px, py, pz));
 
-  // --- stairs ---------------------------------------------------------------
+  // --- stairs and bridges ---------------------------------------------------
   for (const s of S.stairs) meshStair(b, s, look, tp, setEdge);
+  for (const br of S.bridges) meshBridge(b, br, S, tp);
 
   // --- roofs ----------------------------------------------------------------
   for (const P of S.plots) {
@@ -306,6 +312,124 @@ function meshStair(b, s, look, tp, setEdge) {
       }
     }
   });
+}
+
+// A bridge: a deck with balustrades on a row of arches. Piers stand where the
+// layout put them; each opening gets the tallest pointed arch that still leaves
+// headroom above the ground below, flattening to a segmental one when it must.
+function meshBridge(b, br, S, tp) {
+  const ax = DX[br.d];
+  const az = DZ[br.d];
+  const sx = br.i0 * CELL + (ax ? 0 : CELL / 2);
+  const sz = br.j0 * CELL + (az ? 0 : CELL / 2);
+  const F = T.chain(T.translate(sx, 0, sz), T.rotY(Math.atan2(-az, ax)));
+  const L = br.n * CELL;
+  const y = br.y;
+  const yb = y - DECK_T;
+  const hw = CELL / 2;
+  const ground = br.cells.map((c) => S.base[c]);
+  b.withTransform(F, () => {
+    b.m = M.STONE;
+    b.box(0, yb, -hw, L, y, hw, 4 | 16 | 32);
+    for (const sg of [-1, 1]) {
+      b.box(0, y - 0.34, sg > 0 ? hw : -hw - 0.11, L, y, sg > 0 ? hw + 0.11 : -hw, 4 | 8 | (sg > 0 ? 16 : 32));
+      b.box(0, yb - 0.1, sg > 0 ? hw : -hw - 0.07, L, yb + 0.05, sg > 0 ? hw + 0.07 : -hw, 4 | 8 | (sg > 0 ? 16 : 32));
+      for (let t = 0; t < br.n; t++) b.appendTemplate(tp.balPanel, T.translate(t * CELL + 1, y, sg * (hw - 0.15)));
+      for (let t = 0; t <= br.n; t++) b.appendTemplate(tp.balPost, T.translate(t * CELL, y, sg * (hw - 0.15)));
+    }
+    const cuts = [0, ...br.piers, br.n];
+    const PH = 0.36;
+    const spring = [];
+    for (let k = 1; k < cuts.length; k++) {
+      const c0 = cuts[k - 1];
+      const c1 = cuts[k];
+      const u0 = c0 * CELL + (c0 > 0 ? PH : 0);
+      const u1 = c1 * CELL - (c1 < br.n ? PH : 0);
+      const w = u1 - u0;
+      let gmax = -Infinity;
+      for (let t = c0; t < c1; t++) gmax = Math.max(gmax, ground[t] + (S.kind[br.cells[t]] === K_WATER ? WATER_DROP : 0));
+      const top = yb - 0.32;
+      let rise = Math.min(w * 0.78, top - (gmax + 2.3));
+      let ys = top - rise;
+      const arch = [];
+      if (rise < 0.25) {
+        ys = top;
+        rise = 0;
+        arch.push([u0, ys], [u1, ys]);
+      } else if (rise >= w / 2) {
+        // pointed: two arcs centred on the springing line
+        const c = (rise * rise - (w * w) / 4) / w;
+        const R = c + w / 2;
+        const ta = Math.atan2(rise, -c);
+        const m = 7;
+        for (let q = 0; q <= m; q++) {
+          const a = Math.PI - ((Math.PI - ta) * q) / m;
+          arch.push([u0 + w / 2 + c + R * Math.cos(a), ys + R * Math.sin(a), u0 + w / 2 + c, ys]);
+        }
+        for (let q = m - 1; q >= 0; q--) {
+          const a = Math.PI - ((Math.PI - ta) * q) / m;
+          arch.push([u0 + w / 2 - c - R * Math.cos(a), ys + R * Math.sin(a), u0 + w / 2 - c, ys]);
+        }
+      } else {
+        // segmental
+        const R = (w * w) / 4 / (2 * rise) + rise / 2;
+        const yc = ys + rise - R;
+        const a0 = Math.atan2(ys - yc, -w / 2);
+        const a1 = Math.atan2(ys - yc, w / 2);
+        const m = 12;
+        for (let q = 0; q <= m; q++) {
+          const a = a0 + ((a1 - a0) * q) / m;
+          arch.push([u0 + w / 2 + R * Math.cos(a), yc + R * Math.sin(a), u0 + w / 2, yc]);
+        }
+      }
+      // spandrel over the opening, full width
+      const poly = [];
+      for (const p of [[c0 * CELL, yb], [c0 * CELL, ys], ...arch, [c1 * CELL, ys], [c1 * CELL, yb]]) {
+        const q = poly[poly.length - 1];
+        if (!q || Math.hypot(p[0] - q[0], p[1] - q[1]) > 1e-4) poly.push([p[0], p[1]]);
+      }
+      b.m = M.STONE;
+      b.extrude(poly, [], -hw, hw, { front: true, back: true, sides: true });
+      // voussoirs on both faces
+      if (rise > 0) {
+        const band = 0.34;
+        for (const face of [1, -1]) {
+          for (let q = 0; q < arch.length - 1; q++) {
+            const p0 = arch[q];
+            const p1 = arch[q + 1];
+            const n0 = norm(p0[0] - p0[2], p0[1] - p0[3]);
+            const n1 = norm(p1[0] - p1[2], p1[1] - p1[3]);
+            const quad = [[p0[0], p0[1]], [p1[0], p1[1]], [p1[0] + n1[0] * band, p1[1] + n1[1] * band], [p0[0] + n0[0] * band, p0[1] + n0[1] * band]];
+            b.m = br.striped ? (q % 2 === 0 ? M.STRIPE : M.CREAM) : M.STONE;
+            const z0 = face > 0 ? hw : -hw - 0.06;
+            b.extrude(quad, [], z0, z0 + 0.06, { front: face > 0, back: face < 0, sides: true });
+          }
+        }
+      }
+      spring[k] = ys;
+    }
+    // piers, down to the lower of the two grounds they stand between
+    for (let k = 1; k < cuts.length - 1; k++) {
+      const t = cuts[k];
+      const u = t * CELL;
+      const gA = ground[t - 1];
+      const gB = ground[t];
+      const ys = Math.min(spring[k], spring[k + 1]);
+      b.m = M.STONE;
+      b.box(u - PH, Math.min(gA, gB) - 0.2, -hw, u + PH, ys, hw, 0b110011);
+      b.box(u - PH - 0.08, ys - 0.2, -hw - 0.08, u + PH + 0.08, ys, hw + 0.08, 0b111111);
+      for (const [g, sg] of [[gA, -1], [gB, 1]]) {
+        const x0 = sg < 0 ? u - PH - 0.1 : u;
+        const x1 = sg < 0 ? u : u + PH + 0.1;
+        b.box(x0, g, -hw - 0.1, x1, g + 0.4, hw + 0.1, 0b110111 & (sg < 0 ? ~1 : ~2));
+      }
+    }
+  });
+}
+
+function norm(x, y) {
+  const l = Math.hypot(x, y) || 1;
+  return [x / l, y / l];
 }
 
 function roof(b, P) {
@@ -436,9 +560,6 @@ function feature(b, f, tp) {
     case 'statue':
       b.appendTemplate(pickVar(tp.statue, f.seed), at(f.x, f.y, f.z, f.rot));
       break;
-    case 'devotee':
-      b.appendTemplate(f.pose === 'kneel' ? pickVar(tp.devoteeKneel, f.seed) : pickVar(tp.devotee, f.seed), at(f.x, f.y, f.z, f.rot));
-      break;
     case 'garch':
       b.appendTemplate(tp.grandArch[f.striped ? 1 : 0], at(f.x, f.y, f.z, f.rot));
       break;
@@ -474,6 +595,20 @@ function feature(b, f, tp) {
     }
     case 'cloister':
       cloister(b, f, tp, at);
+      break;
+    case 'pavilion':
+      b.appendTemplate(tp.pavilion, T.translate(f.x, f.y, f.z));
+      break;
+    case 'obelisk': {
+      const k = Math.max(0, Math.min(tp.obelisks.length - 1, Math.round(f.h) - 6));
+      b.appendTemplate(tp.obelisks[k], at(f.x, f.y, f.z, (f.seed % 4) * (Math.PI / 2)));
+      break;
+    }
+    case 'spout':
+      b.appendTemplate(tp.spout, at(f.x, f.y, f.z, f.rot));
+      break;
+    case 'bollard':
+      b.appendTemplate(tp.bollard, T.translate(f.x, f.y, f.z));
       break;
     case 'turret':
       turret(b, f);
