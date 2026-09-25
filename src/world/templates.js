@@ -698,6 +698,183 @@ function spout(drop) {
   return b.freeze();
 }
 
+// A wall fountain: a dark pointed niche, a mask pouring into a half-round basin.
+// Origin at the wall foot, +Z out of the wall.
+function wallFountain() {
+  const b = new GeoBuilder(2048);
+  archFrame(b, 1.3, 1.45, 0.8, 0.14, 0.12, 0.5, M.DARK);
+  b.m = M.STONE;
+  b.box(-0.22, 1.02, 0, 0.22, 1.4, 0.2, 0b110111);
+  b.box(-0.08, 1.07, 0.2, 0.08, 1.17, 0.46, 0b111111);
+  const half = (r, z0 = 0) => {
+    const pts = [];
+    for (let s = 0; s <= 12; s++) {
+      const a = (s / 12) * Math.PI;
+      pts.push([r * Math.cos(a), z0 + r * Math.sin(a)]);
+    }
+    return pts;
+  };
+  b.prism(half(0.86), 0, 0.55, { hole: half(0.72, 0.04), top: true });
+  b.m = M.WATER;
+  b.prism(half(0.73, 0.04), 0.1, 0.46, { top: true, sides: false });
+  b.m = M.WHITE;
+  b.box(-0.055, 0.46, 0.37, 0.055, 1.1, 0.47, 0b110111);
+  b.lathe([[0.22, 0.465], [0.12, 0.52], [0.0, 0.53]].map(([r, y]) => [r, y]), 8);
+  return b.freeze();
+}
+
+// A long basin with three jets. Local +X along its length.
+function longBasin() {
+  const b = new GeoBuilder(2048);
+  b.m = M.STONE;
+  b.prism(rect(-2.7, -1.3, 2.7, 1.3), 0, 0.12, { top: true });
+  b.prism(rect(-2.55, -1.15, 2.55, 1.15), 0.12, 0.5, { hole: rect(-2.35, -0.95, 2.35, 0.95), top: true });
+  b.m = M.WATER;
+  b.prism(rect(-2.36, -0.96, 2.36, 0.96), 0.12, 0.4, { top: true, sides: false });
+  for (const x of [-1.6, 0, 1.6]) {
+    b.withTransform(T.translate(x, 0, 0), () => {
+      b.m = M.STONE;
+      b.prism(HEX(0.18), 0.3, 0.48, { top: true });
+      b.m = M.WHITE;
+      b.lathe([[0.05, 0.48], [0.025, 0.9], [0.0, 1.05]], 6);
+    });
+  }
+  return b.freeze();
+}
+
+// Stylised robed figure in low relief on the XY plane, arms raised to the sun.
+function reliefFigure(b, x, y0, h, z0, z1, facing = 0, arms = true) {
+  const w = 0.2 * h;
+  b.extrude([[x - w, y0], [x + w, y0], [x + w * 0.45, y0 + 0.72 * h], [x - w * 0.45, y0 + 0.72 * h]], [], z0, z1, { front: true, sides: true });
+  b.extrude(circle(0.11 * h, 8, x + facing * 0.03 * h, y0 + 0.83 * h), [], z0, z1, { front: true, sides: true });
+  if (!arms) return;
+  for (const sg of facing ? [facing] : [-1, 1]) {
+    const sx = x + sg * w * 0.35;
+    const sy = y0 + 0.62 * h;
+    const ex = sx + sg * 0.28 * h;
+    const ey = sy + 0.3 * h;
+    const t = 0.045 * h;
+    b.extrude([[sx - t, sy - t], [sx + t, sy - t], [ex + t, ey + t], [ex - t, ey + t]].map(([px, py]) => [px, py]), [], z0, z1 - 0.02, { front: true, sides: true });
+  }
+}
+
+function sunburst(b, cx, cy, r0, r1, rays, z0, z1, half = false) {
+  b.extrude(half ? arcPoly(r0, cx, cy) : circle(r0, 16, cx, cy), [], z0, z1 + 0.02, { front: true, sides: true });
+  for (let k = 0; k < rays; k++) {
+    const a = half ? ((k + 0.5) / rays) * Math.PI : (k / rays) * Math.PI * 2;
+    const da = half ? Math.PI / rays / 2.6 : Math.PI / rays / 1.8;
+    const p = (ang, r) => [cx + Math.cos(ang) * r, cy + Math.sin(ang) * r];
+    b.extrude([p(a - da, r0 + 0.06), p(a + da, r0 + 0.06), p(a, r1)], [], z0, z1, { front: true, sides: true });
+  }
+}
+
+function arcPoly(r, cx, cy, segs = 14) {
+  const pts = [];
+  for (let s = 0; s <= segs; s++) {
+    const a = (s / segs) * Math.PI;
+    pts.push([cx + r * Math.cos(a), cy + r * Math.sin(a)]);
+  }
+  return pts;
+}
+
+// Carved wall reliefs, 4 m across (two bays). Origin at the wall foot on the
+// terrace, +Z out of the wall.
+function reliefPanel(seed) {
+  const rng = makeRng(seed);
+  const b = new GeoBuilder(4096);
+  const W = 1.8;
+  const y0 = 0.6;
+  const y1 = 2.75;
+  b.m = M.STONE;
+  b.box(-W, y0, 0, W, y1, 0.08, 0b110111);
+  b.box(-W - 0.08, y0 - 0.1, 0, W + 0.08, y0 + 0.04, 0.18, 0b110111);
+  b.box(-W - 0.08, y1 - 0.04, 0, W + 0.08, y1 + 0.1, 0.18, 0b110111);
+  for (const sg of [-1, 1]) b.box(sg > 0 ? W - 0.1 : -W - 0.08, y0, 0, sg > 0 ? W + 0.08 : -W + 0.1, y1, 0.16, 0b110011);
+  // the sun with the Devotees' triangle
+  b.m = M.CREAM;
+  sunburst(b, 0, 1.95, 0.36, 0.66, 12, 0.08, 0.15);
+  b.m = M.STONE;
+  b.extrude([[-0.2, 1.84], [0.2, 1.84], [0, 2.12]], [[[-0.09, 1.9], [0, 2.04], [0.09, 1.9]]], 0.17, 0.2, { front: true, sides: true });
+  // devotees bowing towards it from both sides
+  for (const sg of [-1, 1]) {
+    for (let k = 0; k < 3; k++) {
+      const x = sg * (0.72 + k * 0.36);
+      reliefFigure(b, x, 0.82, 0.95 - k * 0.08, 0.08, 0.15, -sg, k === 0 || rng() < 0.5);
+    }
+  }
+  // inscription along the foot
+  b.m = M.GLYPH;
+  let x = -1.35;
+  for (let g = 0; g < 8; g++) {
+    glyph(b, x, y0 + 0.14, 0.18, 0.13, rng);
+    x += 0.39;
+  }
+  return b.freeze();
+}
+
+function reliefLunette(seed) {
+  const rng = makeRng(seed);
+  const b = new GeoBuilder(4096);
+  const R = 1.85;
+  const cy = 0.75;
+  b.m = M.STONE;
+  b.extrude(arcPoly(R, 0, cy, 20), [], 0, 0.08, { front: true, sides: true });
+  const ring = arcPoly(R + 0.12, 0, cy, 20).concat(arcPoly(R - 0.08, 0, cy, 20).reverse());
+  b.extrude(ring, [], 0, 0.17, { front: true, sides: true });
+  b.box(-R - 0.2, cy - 0.3, 0, R + 0.2, cy, 0.2, 0b110111);
+  b.m = M.CREAM;
+  sunburst(b, 0, cy, 0.5, 1.6, 11, 0.08, 0.13, true);
+  b.m = M.STONE;
+  for (const sg of [-1, 1]) {
+    reliefFigure(b, sg * 0.95, cy, 0.95, 0.12, 0.2, -sg, true);
+    reliefFigure(b, sg * 1.4, cy, 0.62, 0.12, 0.2, -sg, rng() < 0.6);
+  }
+  b.m = M.GLYPH;
+  let x = -1.2;
+  for (let g = 0; g < 7; g++) {
+    glyph(b, x, cy - 0.15, 0.2, 0.14, rng);
+    x += 0.4;
+  }
+  return b.freeze();
+}
+
+// One 2 m bay of a carved frieze running along a facade (y 0.8 - 2.3 of the
+// storey). Neighbouring bays join into one band.
+function friezeTile(kind, seed) {
+  const rng = makeRng(seed);
+  const b = new GeoBuilder(2048);
+  b.m = M.STONE;
+  b.box(-1, 0.84, 0, 1, 2.16, 0.06, 0b010100);
+  b.box(-1.01, 0.72, 0, 1.01, 0.84, 0.14, 0b011100);
+  b.box(-1.01, 2.16, 0, 1.01, 2.3, 0.14, 0b011100);
+  if (kind === 0) {
+    b.m = M.CREAM;
+    sunburst(b, 0, 1.5, 0.26, 0.56, 10, 0.06, 0.12);
+  } else if (kind === 1) {
+    reliefFigure(b, -0.42, 0.86, 1.0, 0.06, 0.12, 1, true);
+    reliefFigure(b, 0.42, 0.86, 1.0, 0.06, 0.12, -1, true);
+  } else {
+    b.m = M.GLYPH;
+    for (const gx of [-0.6, -0.2, 0.2, 0.6]) glyph(b, gx, 1.5, 0.07, 0.26, rng);
+  }
+  return b.freeze();
+}
+
+// A small balcony on corbels in front of a tall door-window.
+function balcony(balPanel) {
+  const b = new GeoBuilder(4096);
+  archFrame(b, 1.0, 1.55, 0.85, 0.1, 0.09, 0.1);
+  b.m = M.STONE;
+  b.box(-0.88, -0.04, 0, 0.88, 0.12, 0.74, 0b111111);
+  for (const x of [-0.6, 0.6]) {
+    b.box(x - 0.08, -0.26, 0, x + 0.08, -0.04, 0.6, 0b111111);
+    b.box(x - 0.08, -0.55, 0, x + 0.08, -0.26, 0.3, 0b111111);
+  }
+  b.appendTemplate(balPanel, T.chain(T.translate(0, 0.12, 0.64), T.scale(0.82, 0.85, 1)));
+  for (const sg of [-1, 1]) b.appendTemplate(balPanel, T.chain(T.translate(sg * 0.78, 0.12, 0.33), T.rotY(Math.PI / 2), T.scale(0.3, 0.85, 1)));
+  return b.freeze();
+}
+
 function bollard() {
   const b = new GeoBuilder(256);
   b.m = M.STONE;
@@ -733,8 +910,14 @@ export function buildTemplates() {
     obelisks: [6, 7, 8, 9, 10, 11].map((h) => obelisk(h, h * 7 + 1)),
     spout: spout(0.8),
     bollard: bollard(),
+    wallFountain: wallFountain(),
+    longBasin: longBasin(),
+    reliefPanel: [101, 202, 303].map((s) => reliefPanel(s)),
+    reliefLunette: [111, 222, 333].map((s) => reliefLunette(s)),
+    frieze: [0, 1, 2].map((k) => friezeTile(k, 71 + k)),
     stripedArch: new Map(),
   };
+  t.balcony = balcony(t.balPanel);
   t.getStripedArch = (span) => {
     const key = Math.round(span * 10);
     if (!t.stripedArch.has(key)) t.stripedArch.set(key, stripedArch(key / 10));

@@ -190,6 +190,18 @@ void main() {
     col = mix(col, vec3(1.0, 0.97, 0.82), spec * 0.85);
   } else if (m == 11) {
     col = vec3(1.0, 0.98, 0.93) * (0.94 + 0.06 * sin(uTime * 9.0 + vWorld.y * 6.0));
+  } else if (m == 17) {
+    // foam: a broken, glittering line where water meets stone
+    float f1 = sin(vWorld.x * 7.3 + uTime * 2.3) * sin(vWorld.z * 6.1 - uTime * 1.7);
+    float f2 = sin((vWorld.x + vWorld.z) * 11.0 - uTime * 3.1);
+    if (f1 * 0.7 + f2 * 0.5 < -0.25) discard;
+    col = mix(shade, lit, 0.55 + 0.45 * sh);
+  } else if (m == 18) {
+    // falling water: pale streaks sliding down the sheet
+    float colm = floor((vWorld.x + vWorld.z) * 5.0);
+    float rnd = fract(sin(colm * 91.7) * 43758.5453);
+    float streak = step(0.45, fract(vWorld.y * 0.8 + uTime * (1.4 + rnd) + rnd * 7.0));
+    col = mix(shade, lit, 0.35 + 0.65 * streak);
   } else if (m == 1) {
     // roof tiles: stripes running down the slope
     vec3 t = normalize(cross(N, vec3(0.0, 1.0, 0.0)) + 1e-4);
@@ -208,7 +220,7 @@ void main() {
   }
 
   // etched hatching, heavier in shade
-  bool flatLit = m == 11 || m == 5;
+  bool flatLit = m == 11 || m == 5 || m == 17 || m == 18;
   if (!flatLit) {
     float amt = (1.0 - light) * 0.2 + (vertical ? 0.035 : 0.0);
     float h = hatchLines(vLocal, N, 0.1, 0.13);
@@ -228,7 +240,9 @@ void main() {
 
   outColor = vec4(col, 1.0);
   vec3 vn = normalize((viewMatrix * vec4(N, 0.0)).xyz);
-  outNormal = vec4(vn * 0.5 + 0.5, (float(m) + 0.5) / 32.0);
+  // foam reads as part of the water: no ink line between them
+  float mid = m == 17 ? 5.0 : float(m);
+  outNormal = vec4(vn * 0.5 + 0.5, (mid + 0.5) / 32.0);
 }
 `;
 

@@ -2,7 +2,7 @@
 // collision edge flags (balustrades, stair cheeks).
 
 import { BLOCK, CELL, LEVEL_H, STEPS_PER_CELL, K_FLOOR, K_STAIR, K_BUILDING, K_LANDING, K_WATER, DX, DZ, M } from '../config.js';
-import { GeoBuilder, T, circle } from './geometry.js';
+import { GeoBuilder, T, circle, rect, pointedArch, pointedArchHeight } from './geometry.js';
 import { hash3 } from './rng.js';
 import { stairRamp, WATER_DROP, DECK_T } from './layout.js';
 import { dirAngle } from './decorate.js';
@@ -13,13 +13,18 @@ const N = BLOCK;
 export function wallPattern(obx, obz, oplot, dir, bandLevel) {
   const h = hash3(0x7a11 + oplot * 131 + dir * 7, obx, obz, bandLevel + 1000);
   const r = (h % 1000) / 1000;
-  if (r < 0.3) return 'single';
-  if (r < 0.48) return 'alt';
-  if (r < 0.62) return 'twin';
-  if (r < 0.73) return 'tall';
-  if (r < 0.85) return 'blind';
+  if (r < 0.26) return 'single';
+  if (r < 0.4) return 'alt';
+  if (r < 0.52) return 'twin';
+  if (r < 0.61) return 'tall';
+  if (r < 0.71) return 'blind';
+  if (r < 0.79) return 'frieze';
+  if (r < 0.88) return 'balcony';
   return 'plain';
 }
+
+// Roofs one could stand on: flat, or flat round a dome or a minaret.
+const flatTop = (P) => P.roof === 'flat' || P.roof === 'dome' || P.roof === 'minaret';
 
 function edgeCentre(i, j, d) {
   return [(i + 0.5 + DX[d] * 0.5) * CELL, (j + 0.5 + DZ[d] * 0.5) * CELL];
@@ -40,7 +45,7 @@ export function meshBlock(S, D, look, tp) {
   const floorMat = (c) => {
     const k = S.kind[c];
     if (k === K_FLOOR || k === K_LANDING) return D.floorMat[c] === M.GRASS ? M.GRASS : M.STONE;
-    if (k === K_BUILDING && plotOf(c).roof === 'flat') return M.STONE;
+    if (k === K_BUILDING && flatTop(plotOf(c))) return M.STONE;
     if (k === K_WATER) return M.WATER;
     return -1;
   };
@@ -52,13 +57,24 @@ export function meshBlock(S, D, look, tp) {
       const y = S.base[c];
       b.m = m;
       b.quad([i * CELL, y, (j + 1) * CELL], [(i + 1) * CELL, y, (j + 1) * CELL], [(i + 1) * CELL, y, j * CELL], [i * CELL, y, j * CELL]);
+      if (m === M.WATER) foam(b, i, j, y, look);
     }
   }
 
   // --- walls ----------------------------------------------------------------
   const along = (i, j, d) => (d % 2 === 0 ? S.bz * N + j : S.bx * N + i);
-  const emitBand = (pat, al, yb) => {
+  // ground: the storey seen from a terrace, where a balcony makes no sense
+  const emitBand = (pat, al, yb, ground = false) => {
     switch (pat) {
+      case 'frieze': {
+        const k = [0, 1, 2, 1][((al % 4) + 4) % 4];
+        b.appendTemplate(tp.frieze[k], T.translate(0, yb, 0));
+        break;
+      }
+      case 'balcony':
+        if (ground || (al & 1) === 1) b.appendTemplate(tp.windowTall, T.translate(0, yb + 0.3, 0));
+        else b.appendTemplate(tp.balcony, T.translate(0, yb + 0.25, 0));
+        break;
       case 'single':
         b.appendTemplate(tp.windowSingle, T.translate(0, yb + 0.45, 0));
         break;
@@ -128,7 +144,7 @@ export function meshBlock(S, D, look, tp) {
       }
       if (r.low) return;
       const pat = wallPattern(r.owner[0], r.owner[1], r.owner[2], face, Math.round(r.y / LEVEL_H));
-      emitBand(pat, along(r.i, r.j, r.d), r.y);
+      emitBand(pat, along(r.i, r.j, r.d), r.y, true);
     });
   }
 
@@ -148,7 +164,7 @@ export function meshBlock(S, D, look, tp) {
     for (let i = 0; i < N; i++) {
       const c = j * N + i;
       const k = S.kind[c];
-      const flat = k === K_BUILDING && plotOf(c).roof === 'flat';
+      const flat = k === K_BUILDING && flatTop(plotOf(c));
       if (!(k === K_FLOOR || k === K_LANDING || flat)) continue;
       const top = S.base[c];
       for (let d = 0; d < 4; d++) {
@@ -201,7 +217,9 @@ export function meshBlock(S, D, look, tp) {
   // --- roofs ----------------------------------------------------------------
   for (const P of S.plots) {
     if (!P.building || P.roof === 'flat') continue;
-    roof(b, P);
+    if (P.roof === 'dome') dome(b, P);
+    else if (P.roof === 'minaret') minaret(b, P, S);
+    else roof(b, P);
   }
 
   // --- features -------------------------------------------------------------
@@ -613,6 +631,27 @@ function feature(b, f, tp) {
     case 'turret':
       turret(b, f);
       break;
+    case 'rill':
+      rill(b, f);
+      break;
+    case 'relief':
+      b.appendTemplate(pickVar(f.kind === 'lunette' ? tp.reliefLunette : tp.reliefPanel, f.seed), at(f.x, f.y, f.z, f.rot));
+      break;
+    case 'wallfountain':
+      b.appendTemplate(tp.wallFountain, at(f.x, f.y, f.z, f.rot));
+      break;
+    case 'basin':
+      b.appendTemplate(tp.longBasin, at(f.x, f.y, f.z, f.rot));
+      break;
+    case 'weir':
+      b.withTransform(at(f.x, f.y, f.z, f.rot), () => weir(b, f));
+      break;
+    case 'sluice':
+      b.withTransform(at(f.x, f.y, f.z, f.rot), () => sluice(b, f));
+      break;
+    case 'culvert':
+      b.withTransform(at(f.x, f.y, f.z, f.rot), () => culvert(b, f));
+      break;
     default:
   }
 }
@@ -668,5 +707,254 @@ function turret(b, f) {
     b.lathe([[r + 0.25, y1 + 0.16], [0.0, y1 + 0.16 + r * 2.1]], 8, { smooth: false, phase: Math.PI / 8 });
     b.m = M.GOLD;
     b.lathe([[0.08, y1 + r * 2.0], [0.12, y1 + r * 2.1 + 0.15], [0.0, y1 + r * 2.1 + 0.55]], 6);
+  });
+}
+
+// ---------------------------------------------------------------------------
+// Waterworks
+
+// Glittering foam where water meets stone, and a broad band at the foot of a
+// weir where a higher reach pours in.
+function foam(b, i, j, y, look) {
+  b.m = M.FOAM;
+  const yf = y + 0.015;
+  for (let d = 0; d < 4; d++) {
+    const n = look(i + DX[d], j + DZ[d]);
+    let w;
+    if (n.kind !== K_WATER) w = 0.22;
+    else if (n.base > y + 0.5) w = 0.7;
+    else continue;
+    const x0 = i * CELL;
+    const z0 = j * CELL;
+    const x1 = x0 + CELL;
+    const z1 = z0 + CELL;
+    let r;
+    if (d === 0) r = [x1 - w, z0, x1, z1];
+    else if (d === 2) r = [x0, z0, x0 + w, z1];
+    else if (d === 1) r = [x0, z1 - w, x1, z1];
+    else r = [x0, z0, x1, z0 + w];
+    b.quad([r[0], yf, r[3]], [r[2], yf, r[3]], [r[2], yf, r[1]], [r[0], yf, r[1]]);
+  }
+}
+
+// Local frame: origin on the wall face where the rill starts, +Z along it.
+function rill(b, f) {
+  const L = f.n * CELL;
+  b.withTransform(T.chain(T.translate(f.x, f.y, f.z), T.rotY(f.rot)), () => {
+    const zEnd = f.spill ? L - 0.05 : L - 1.0;
+    b.m = M.CREAM;
+    for (const sg of [-1, 1]) b.box(sg > 0 ? 0.33 : -0.47, 0, 0.85, sg > 0 ? 0.47 : -0.33, 0.12, zEnd, 0b110111);
+    b.m = M.WATER;
+    b.quad([-0.33, 0.08, zEnd], [0.33, 0.08, zEnd], [0.33, 0.08, 0.85], [-0.33, 0.08, 0.85]);
+    b.m = M.FOAM;
+    for (const sg of [-1, 1]) {
+      const a = sg > 0 ? 0.25 : -0.33;
+      b.quad([a, 0.085, zEnd], [a + 0.08, 0.085, zEnd], [a + 0.08, 0.085, 0.85], [a, 0.085, 0.85]);
+    }
+    // stepping slabs
+    b.m = M.CREAM;
+    for (let k = 1; k < f.n; k++) {
+      if (!f.spill && k * CELL > L - 1.8) break;
+      b.box(-0.54, 0, k * CELL - 0.26, 0.54, 0.15, k * CELL + 0.26, 0b111111);
+    }
+    // head basin and the spout above it
+    b.prism(rect(-0.68, 0, 0.68, 0.9), 0, 0.32, { hole: rect(-0.54, 0.04, 0.54, 0.76), top: true });
+    b.m = M.WATER;
+    b.prism(rect(-0.55, 0.04, 0.55, 0.77), 0.1, 0.26, { top: true, sides: false });
+    b.m = M.STONE;
+    b.box(-0.22, 1.0, 0, 0.22, 1.38, 0.18, 0b110111);
+    b.box(-0.08, 1.06, 0.18, 0.08, 1.16, 0.46, 0b111111);
+    b.m = M.WHITE;
+    b.box(-0.055, 0.26, 0.36, 0.055, 1.08, 0.46, 0b110111);
+    if (f.spill) {
+      // scupper through the parapet, and the fall to what lies below
+      const yl = f.spill.y - f.y;
+      b.m = M.STONE;
+      b.box(-0.2, -0.55, L - 0.3, 0.2, -0.33, L + 0.62, 0b111111);
+      b.m = M.FALL;
+      b.box(-0.1, yl + (f.spill.basin ? 0.38 : 0.0), L + 0.44, 0.1, -0.36, L + 0.6, 0b110111);
+      if (f.spill.basin) {
+        b.withTransform(T.translate(0, yl, L + 0.8), () => {
+          b.m = M.STONE;
+          b.prism(circle(0.72, 14), 0, 0.45, { hole: circle(0.58, 14), top: true });
+          b.m = M.WATER;
+          b.prism(circle(0.59, 14), 0.1, 0.38, { top: true, sides: false });
+          b.m = M.WHITE;
+          b.lathe([[0.3, 0.38], [0.16, 0.46], [0.0, 0.48]], 8);
+        });
+      }
+    } else {
+      // it ends in a small square basin with a jet
+      b.withTransform(T.translate(0, 0, L - 1.0), () => {
+        b.m = M.STONE;
+        b.prism(rect(-0.78, -0.78, 0.78, 0.78), 0, 0.45, { hole: rect(-0.62, -0.62, 0.62, 0.62), top: true });
+        b.m = M.WATER;
+        b.prism(rect(-0.63, -0.63, 0.63, 0.63), 0.1, 0.38, { top: true, sides: false });
+        b.m = M.STONE;
+        b.prism(circle(0.14, 6), 0.1, 0.48, { top: true });
+        b.m = M.WHITE;
+        b.lathe([[0.05, 0.48], [0.02, 0.85], [0.0, 0.98]], 6);
+      });
+    }
+  });
+}
+
+// Water pouring over the crest of a weir. Origin on the crest, +Z downstream.
+function weir(b, f) {
+  const hw = f.w / 2 - 0.02;
+  const D = f.drop;
+  b.m = M.FALL;
+  b.quad([-hw, -0.12, 0.24], [hw, -0.12, 0.24], [hw, 0.03, -0.12], [-hw, 0.03, -0.12]);
+  b.quad([-hw, -D + 0.02, 0.34], [hw, -D + 0.02, 0.34], [hw, -0.12, 0.24], [-hw, -0.12, 0.24]);
+}
+
+// A sluice gate across a reach just above its weir: two piers, a lintel with a
+// winding wheel, and a crimson gate leaf wound part way up.
+function sluice(b, f) {
+  const hw = f.w / 2;
+  const top = 3.3;
+  b.m = M.STONE;
+  for (const sg of [-1, 1]) {
+    const x0 = sg > 0 ? hw - 0.42 : -hw;
+    const x1 = sg > 0 ? hw : -hw + 0.42;
+    b.box(x0, -0.3, -0.3, x1, top, 0.3, 0b110111);
+    b.box(x0 - 0.05, top - 0.3, -0.35, x1 + 0.05, top - 0.18, 0.35, 0b111111);
+  }
+  b.box(-hw - 0.08, top, -0.34, hw + 0.08, top + 0.36, 0.34, 0b111111);
+  b.frustum(-hw + 0.21, top + 0.36, 0, 0.5, 0.0, 0.6, false);
+  b.frustum(hw - 0.21, top + 0.36, 0, 0.5, 0.0, 0.6, false);
+  // gate leaf with its planks picked out
+  const g0 = f.open;
+  const g1 = Math.min(g0 + 1.5, top - 0.3);
+  b.m = M.STRIPE;
+  b.box(-hw + 0.42, g0, -0.08, hw - 0.42, g1, 0.08, 0b111111);
+  b.m = M.DARK;
+  for (let y = g0 + 0.5; y < g1 - 0.2; y += 0.5) b.box(-hw + 0.42, y - 0.03, 0.08, hw - 0.42, y + 0.03, 0.1, 0b010100);
+  b.box(-0.04, g1, -0.04, 0.04, top, 0.04, 0b110011);
+  // the wheel that winds it
+  b.withTransform(T.translate(0, top + 0.36 + 0.55, 0), () => {
+    b.m = M.GOLD;
+    b.extrude(circle(0.5, 16), [circle(0.4, 16)], -0.05, 0.05, { front: true, back: true, sides: true });
+    b.box(-0.45, -0.04, -0.04, 0.45, 0.04, 0.04, 0b111111);
+    b.box(-0.04, -0.45, -0.04, 0.04, 0.45, 0.04, 0b111111);
+    b.m = M.STONE;
+    b.box(-0.1, -0.55, -0.12, 0.1, -0.1, 0.12, 0b110111);
+  });
+  // white water pressing out beneath the gate
+  if (g0 > 0.05) {
+    b.m = M.FOAM;
+    b.quad([-hw + 0.42, 0.02, 0.6], [hw - 0.42, 0.02, 0.6], [hw - 0.42, 0.02, 0.08], [-hw + 0.42, 0.02, 0.08]);
+  }
+}
+
+// Grated culvert in the end wall of a reach. Origin at the water surface on
+// the wall face, +Z out over the water. Water pours out of the head culvert.
+function culvert(b, f) {
+  const w = f.w;
+  const k = 0.65;
+  const rise = pointedArchHeight(w, 0, k);
+  const hs = Math.max(0.15, Math.min(0.9, f.room - 0.55 - rise));
+  const t = 0.3;
+  const outer = pointedArch(w + 2 * t, hs, (k * w + t) / (w + 2 * t), 8, 0).slice(2);
+  const inner = pointedArch(w, hs, k, 8, 0).slice(2);
+  const frame = [[w / 2 + t, 0], ...outer, [-w / 2 - t, 0], [-w / 2, 0], ...inner.slice().reverse(), [w / 2, 0]];
+  b.m = M.STONE;
+  b.extrude(frame, [], 0, 0.14, { front: true, sides: true });
+  b.m = M.DARK;
+  b.extrude(pointedArch(w, hs, k, 8, 0), [], -0.02, 0.005, { front: true, sides: false });
+  // the grate
+  const r = k * w;
+  const cx = w / 2 - r;
+  const archY = (x) => hs + Math.sqrt(Math.max(0, r * r - (Math.abs(x) - cx) ** 2));
+  const y0 = f.pour ? 0.42 : -0.1;
+  b.m = M.STONE;
+  const bars = Math.max(3, Math.round(w / 0.34));
+  for (let q = 1; q < bars; q++) {
+    const x = -w / 2 + (q * w) / bars;
+    b.box(x - 0.035, y0, 0.03, x + 0.035, archY(x) - 0.02, 0.1, 0b110111);
+  }
+  for (const y of [y0 + 0.05, hs + 0.2, hs + rise * 0.55]) {
+    if (y > hs + rise - 0.3) continue;
+    const half = y <= hs ? w / 2 : Math.max(0, cx + Math.sqrt(Math.max(0, r * r - (y - hs) ** 2)));
+    b.box(-half, y - 0.04, 0.04, half, y + 0.04, 0.12, 0b111111);
+  }
+  if (f.pour) {
+    const hw = w * 0.42;
+    b.m = M.FALL;
+    b.quad([-hw, 0.01, 0.95], [hw, 0.01, 0.95], [hw, 0.4, -0.05], [-hw, 0.4, -0.05]);
+    b.m = M.FOAM;
+    b.quad([-hw - 0.2, 0.02, 1.9], [hw + 0.2, 0.02, 1.9], [hw + 0.2, 0.02, 0.9], [-hw - 0.2, 0.02, 0.9]);
+  }
+}
+
+// ---------------------------------------------------------------------------
+// Domes and minarets rising from flat roofs
+
+function dome(b, P) {
+  const xc = ((P.x0 + P.x1) / 2) * CELL;
+  const zc = ((P.z0 + P.z1) / 2) * CELL;
+  const y0 = P.level * LEVEL_H;
+  const R = Math.min(4, (Math.min(P.w, P.d) * CELL) / 2 - 1.1);
+  const s = R / 1.45;
+  b.withTransform(T.translate(xc, y0, zc), () => {
+    b.m = M.CREAM;
+    b.prism(circle(R, 8, 0, 0, Math.PI / 8), 0, 1.25, { top: false });
+    b.m = M.STONE;
+    b.prism(circle(R + 0.14, 8, 0, 0, Math.PI / 8), 1.25, 1.42, { top: true });
+    b.m = M.DARK;
+    const ap = R * Math.cos(Math.PI / 8) + 0.01;
+    for (let k = 0; k < 8; k++) {
+      b.withTransform(T.chain(T.rotY((k / 8) * Math.PI * 2), T.translate(0, 0, ap)), () => {
+        b.extrude(pointedArch(0.36, 0.55, 0.8, 3, 0.3), [], 0, 0.01, { front: true, sides: false });
+      });
+    }
+    b.m = M.ROOF;
+    b.lathe([[1.45, 0], [1.52, 0.3], [1.4, 0.85], [1.08, 1.35], [0.62, 1.75], [0.18, 2.08], [0.0, 2.18]].map(([r, y]) => [r * s, 1.42 + y * s]), 16);
+    b.m = M.GOLD;
+    const top = 1.42 + 2.1 * s;
+    b.lathe([[0.1, top], [0.16, top + 0.2], [0.05, top + 0.45], [0.12, top + 0.62], [0.0, top + 1.05]], 8);
+  });
+}
+
+function minaret(b, P, S) {
+  const xc = ((P.x0 + P.x1) / 2) * CELL;
+  const zc = ((P.z0 + P.z1) / 2) * CELL;
+  const y0 = P.level * LEVEL_H;
+  const H = 4.5 + (hash3(0x3a1e, S.bx, S.bz, P.id) % 5);
+  const oct = (r) => circle(r, 8, 0, 0, Math.PI / 8);
+  b.withTransform(T.translate(xc, y0, zc), () => {
+    b.m = M.STONE;
+    b.prism(oct(1.35), 0, 0.5, { top: false });
+    b.prism(oct(1.2), 0.5, H, { top: false });
+    b.prism(oct(1.3), H * 0.5, H * 0.5 + 0.14, { top: true });
+    b.m = M.DARK;
+    const ap = 1.2 * Math.cos(Math.PI / 8) + 0.01;
+    for (let k = 0; k < 8; k += 2) {
+      b.withTransform(T.chain(T.rotY((k / 8) * Math.PI * 2), T.translate(0, 0, ap)), () => {
+        b.extrude(pointedArch(0.22, H * 0.5 + 0.9, 0.8, 3, H * 0.5 + 0.35), [], 0, 0.01, { front: true, sides: false });
+        b.extrude(pointedArch(0.22, 1.6, 0.8, 3, 1.0), [], 0, 0.01, { front: true, sides: false });
+      });
+    }
+    // corbelled gallery with a parapet
+    b.m = M.STONE;
+    b.lathe([[1.2, H], [1.75, H + 0.5]], 8, { smooth: false, phase: Math.PI / 8 });
+    b.prism(oct(1.8), H + 0.5, H + 0.64, { top: true });
+    b.prism(oct(1.8), H + 0.64, H + 1.3, { hole: oct(1.62), top: true });
+    // lantern storey and its spire
+    b.m = M.CREAM;
+    b.prism(oct(0.85), H + 0.64, H + 3.0, { top: false });
+    b.m = M.DARK;
+    const ap2 = 0.85 * Math.cos(Math.PI / 8) + 0.01;
+    for (let k = 0; k < 8; k++) {
+      b.withTransform(T.chain(T.rotY((k / 8) * Math.PI * 2), T.translate(0, 0, ap2)), () => {
+        b.extrude(pointedArch(0.3, H + 2.05, 0.8, 3, H + 1.4), [], 0, 0.01, { front: true, sides: false });
+      });
+    }
+    b.m = M.STONE;
+    b.prism(oct(0.98), H + 3.0, H + 3.16, { top: true });
+    b.m = M.ROOF;
+    b.lathe([[1.0, H + 3.16], [0.0, H + 5.2]], 8, { smooth: false, phase: Math.PI / 8 });
+    b.m = M.GOLD;
+    b.lathe([[0.08, H + 5.05], [0.13, H + 5.3], [0.04, H + 5.55], [0.1, H + 5.7], [0.0, H + 6.1]], 6);
   });
 }

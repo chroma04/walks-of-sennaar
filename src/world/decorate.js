@@ -5,6 +5,7 @@
 
 import { BLOCK, CELL, LEVEL_H, K_FLOOR, K_STAIR, K_BUILDING, K_LANDING, K_WATER, DX, DZ, M } from '../config.js';
 import { hash2, makeRng } from './rng.js';
+import { WATER_DROP } from './layout.js';
 
 const N = BLOCK;
 
@@ -20,7 +21,9 @@ export function decorate(S, look) {
     spawns: [], // devotees: [{ x, y, z, rot, mode, seed, count }]
   };
   const used = S.used.slice();
-  const ctx = { S, look, rng, out, used, abut: new Set() };
+  // quiet: cells whose ground-floor wall stays plain (a relief, a fountain or a
+  // rill's spout stands there instead of a window)
+  const ctx = { S, look, rng, out, used, abut: new Set(), quiet: new Set() };
   for (const b of S.bridges) ctx.abut.add(b.a).add(b.b);
 
   for (const P of S.plots) {
@@ -111,7 +114,7 @@ function blockEdge(ctx, i, j, d) {
 function decorateTerrace(ctx, P) {
   const { rng, out } = ctx;
   const y = P.level * LEVEL_H;
-  const sides = [0, 1, 2, 3].map((d) => sideInfo(ctx, P, d));
+  let sides = [0, 1, 2, 3].map((d) => sideInfo(ctx, P, d));
   const area = P.w * P.d;
 
   // Hidden gardens: terraces nobody can reach become lawns with trees.
@@ -134,6 +137,7 @@ function decorateTerrace(ctx, P) {
   }
   // set pieces furnish themselves; the generic scatter below stays off them
   const open = program === 'plaza';
+  if (open && P.reachable && area >= 24 && rng() < 0.16 && rill(ctx, P, y, sides)) sides = [0, 1, 2, 3].map((d) => sideInfo(ctx, P, d));
   if (program === 'summit' && P.reachable) shrine(ctx, P, y, F.shrine);
   else if (program === 'court' && P.reachable) court(ctx, P, y, F.garden);
   else if (program === 'parterre' && P.reachable) court(ctx, P, y, rng() < 0.55);
@@ -147,17 +151,18 @@ function decorateTerrace(ctx, P) {
     for (const run of runs(s, (e) => e.rel === 'up' && e.wall >= LEVEL_H - 0.05)) {
       let doorAt = -1;
       if (rng() < (program === 'quay' ? 0.8 : 0.5)) {
-        const cand = run.filter((e) => e.u !== 1);
+        const cand = run.filter((e) => e.u !== 1 && e.u !== 3);
         if (cand.length) doorAt = cand[Math.floor(rng() * cand.length)].t;
       }
       const planter = new Set();
+      const piece = wallPieces(ctx, P, run, d, y, doorAt, program);
       if (program !== 'cloister' && program !== 'summit' && P.reachable) {
         for (let k = 0; k < run.length; k++) {
           const e = run[k];
-          if (e.t === doorAt || e.u !== 0 || rng() > (program === 'tier' ? 0.3 : 0.22)) continue;
+          if (e.t === doorAt || e.u !== 0 || piece.has(e.t) || rng() > (program === 'tier' ? 0.3 : 0.22)) continue;
           let len = 0;
           const want = 2 + Math.floor(rng() * 2);
-          while (k + len < run.length && len < want && run[k + len].u === 0 && run[k + len].t !== doorAt) len++;
+          while (k + len < run.length && len < want && run[k + len].u === 0 && run[k + len].t !== doorAt && !piece.has(run[k + len].t)) len++;
           if (len < 1) continue;
           const seg = run.slice(k, k + len);
           placePlanter(ctx, seg, d, y);
@@ -168,8 +173,9 @@ function decorateTerrace(ctx, P) {
       for (const e of run) {
         if (e.u === 1) continue;
         const isDoor = e.t === doorAt;
-        out.band0.push({ i: e.i, j: e.j, d, y, door: isDoor, low: planter.has(e.t), owner: [e.owner.bx, e.owner.bz, e.owner.plot] });
-        if (!isDoor && !planter.has(e.t) && e.u === 0 && P.reachable && program !== 'summit' && rng() < (program === 'quay' ? 0.12 : 0.06)) {
+        const quiet = planter.has(e.t) || piece.has(e.t) || ctx.quiet.has(e.j * N + e.i);
+        out.band0.push({ i: e.i, j: e.j, d, y, door: isDoor, low: quiet, owner: [e.owner.bx, e.owner.bz, e.owner.plot] });
+        if (!isDoor && !quiet && e.u === 0 && P.reachable && program !== 'summit' && rng() < (program === 'quay' ? 0.12 : 0.06)) {
           // bench against the wall
           const [cx, cz] = edgeCentre(e.i, e.j, d);
           const inset = 0.45;
@@ -486,14 +492,15 @@ function centrePiece(ctx, P, y, forced = null, at = null) {
   if (type) {
     // chosen by the caller
   } else if (P.w >= 7 && P.d >= 7 && r < 0.12) type = 'statue';
-  else if (P.w >= 7 && P.d >= 7 && r < 0.24) type = 'pool';
-  else if (P.w >= 7 && P.d >= 7 && r < 0.35) type = 'garch';
-  else if (P.w >= 6 && P.d >= 6 && r < 0.43) type = 'obelisk';
+  else if (P.w >= 7 && P.d >= 7 && r < 0.22) type = 'pool';
+  else if (P.w >= 8 && P.d >= 8 && r < 0.3) type = 'basin';
+  else if (P.w >= 7 && P.d >= 7 && r < 0.38) type = 'garch';
+  else if (P.w >= 6 && P.d >= 6 && r < 0.45) type = 'obelisk';
   else if (P.w >= 5 && P.d >= 5 && r < 0.64) type = 'fountain';
   else if (P.w >= 5 && P.d >= 5 && r < 0.76) type = 'palmbed';
   else if (P.w >= 5 && P.d >= 5 && r < 0.88) type = 'sarchfree';
   else return false;
-  const size = type === 'pool' ? 3 : type === 'sarchfree' ? 1 : type === 'garch' ? 4 : 2;
+  const size = type === 'pool' || type === 'basin' ? 3 : type === 'sarchfree' ? 1 : type === 'garch' ? 4 : 2;
   const ci = at ? at[0] : Math.round((P.x0 + P.x1) / 2);
   const cj = at ? at[1] : Math.round((P.z0 + P.z1) / 2);
   const offsets = [[0, 0], [1, 0], [-1, 0], [0, 1], [0, -1], [1, 1], [-1, -1], [1, -1], [-1, 1]];
@@ -520,6 +527,11 @@ function centrePiece(ctx, P, y, forced = null, at = null) {
     } else if (type === 'fountain') {
       out.feats.push({ t: 'fountain', x, z, y });
       out.circles.push([x, z, 1.45, y]);
+    } else if (type === 'basin') {
+      // a long basin with a row of jets, laid along the plot
+      const alongX = P.w >= P.d;
+      out.feats.push({ t: 'basin', x, z, y, rot: alongX ? Math.PI / 2 : 0 });
+      out.boxes.push(alongX ? [x - 2.75, z - 1.35, x + 2.75, z + 1.35, y] : [x - 1.35, z - 2.75, x + 1.35, z + 2.75, y]);
     } else if (type === 'palmbed') {
       out.feats.push({ t: 'palmbed', x, z, y, seed: rng() * 1e6 });
       out.boxes.push([x - 1.6, z - 1.6, x + 1.6, z + 1.6, y]);
@@ -545,7 +557,8 @@ function centrePiece(ctx, P, y, forced = null, at = null) {
         const oz = alongX ? 0 : s * 1.4;
         out.boxes.push([px + ox - 0.3, pz + oz - 0.3, px + ox + 0.3, pz + oz + 0.3, y]);
       }
-      mark(ctx, ci, cj, ci + 1, cj + 1, 2);
+      // its piers stand in the neighbouring cells: keep props clear of them
+      for (let j = cj - 1; j <= cj + 1; j++) for (let i = ci - 1; i <= ci + 1; i++) if (ctx.used[j * N + i] === 0) ctx.used[j * N + i] = 2;
       return true;
     }
     mark(ctx, i0, j0, i1, j1, 3);
@@ -627,7 +640,7 @@ function court(ctx, P, y, garden) {
     return;
   }
   const alongX = P.w >= P.d;
-  const type = rng.pick(['pool', 'fountain', 'palmbed', 'statue', 'obelisk']);
+  const type = rng.pick(['pool', 'fountain', 'palmbed', 'statue', 'obelisk', 'basin']);
   const ci = Math.round((P.x0 + P.x1) / 2);
   const cj = Math.round((P.z0 + P.z1) / 2);
   const q = Math.round((alongX ? P.w : P.d) / 4);
@@ -653,21 +666,43 @@ function quay(ctx, P, y) {
   }
 }
 
-// Canal water: a spout at each end wall.
+// Canal and cascade water. Where a reach meets a lower one the water pours over
+// a weir (some with a sluice gate on the crest); where it meets a high wall it
+// comes out of a spout or a grated culvert, or drains into one.
 function decorateWater(ctx, P) {
-  const { out, S } = ctx;
+  const { out, S, rng } = ctx;
+  const F = S.feature;
   const y = P.level * LEVEL_H;
-  const alongX = S.feature && S.feature.alongX;
+  const ys = y - WATER_DROP;
+  const alongX = F && F.alongX;
   const ends = alongX ? [[P.x0, 2], [P.x1 - 1, 0]] : [[P.z0, 3], [P.z1 - 1, 1]];
+  const width = (alongX ? P.d : P.w) * CELL;
+  const cascade = F && F.kind === 'cascade';
   for (const [e, d] of ends) {
     const x = alongX ? (d === 0 ? P.x1 * CELL : P.x0 * CELL) : ((P.x0 + P.x1) / 2) * CELL;
     const z = alongX ? ((P.z0 + P.z1) / 2) * CELL : d === 1 ? P.z1 * CELL : P.z0 * CELL;
-    // the wall at this end must rise well above the quays
     const ni = alongX ? e + DX[d] : Math.floor((P.x0 + P.x1) / 2);
     const nj = alongX ? Math.floor((P.z0 + P.z1) / 2) : e + DZ[d];
     const n = ctx.look(ni, nj);
+    const rot = dirAngle(d);
+    if (n.kind === K_WATER) {
+      if (n.base > ys - 0.5) continue;
+      out.feats.push({ t: 'weir', x, z, y: ys, drop: ys - n.base, w: width, rot });
+      // a sluice gate on the crest, clear of any bridge overhead
+      const row = sideCells(P, d);
+      if (F.sluice && rng() < 0.75 && row.every(([i, j]) => !hasDeck(ctx, i, j) && !hasDeck(ctx, i - DX[d], j - DZ[d]))) {
+        out.feats.push({ t: 'sluice', x: x - DX[d] * 0.7, z: z - DZ[d] * 0.7, y: ys, w: width, rot, open: 0.5 + rng() * 1.1 });
+      }
+      continue;
+    }
+    // the wall at this end must rise well above the quays
     if (n.base < y + 2.4) continue;
-    out.feats.push({ t: 'spout', x, z, y, rot: dirAngle((d + 2) % 4) });
+    const head = cascade ? d !== P.down : d === ends[0][1];
+    if (cascade && head && P.step !== 0) continue;
+    if (cascade && !head && P.step !== P.steps - 1) continue;
+    const inward = dirAngle((d + 2) % 4);
+    if (!cascade && rng() < 0.5) out.feats.push({ t: 'spout', x, z, y, rot: inward });
+    else out.feats.push({ t: 'culvert', x, z, y: ys, rot: inward, w: Math.min(width - 1.0, 4.2), pour: head, room: n.base - ys });
   }
 }
 
@@ -692,11 +727,144 @@ function decorateBuilding(ctx, P) {
       const cz = Z0 + 1.4 + Math.floor(rng() * 2) * (Z1 - Z0 - 2.8);
       out.feats.push({ t: 'turret', x: cx, z: cz, y, h: 2.5 + rng() * 3, r: 1.0 });
     }
+  } else if (P.roof === 'dome' && rng() < 0.55) {
+    // pinnacles on the corners of the parapet round the dome
+    for (const [x, z] of [[X0 + 0.55, Z0 + 0.55], [X1 - 0.55, Z0 + 0.55], [X1 - 0.55, Z1 - 0.55], [X0 + 0.55, Z1 - 0.55]]) out.feats.push({ t: 'pinnacle', x, z, y, h: 2.6 });
   } else if (P.roof === 'hip' && rng() < 0.3) {
     const cx = rng() < 0.5 ? X0 + 1.2 : X1 - 1.2;
     const cz = rng() < 0.5 ? Z0 + 1.2 : Z1 - 1.2;
     out.feats.push({ t: 'turret', x: cx, z: cz, y, h: 3.5 + rng() * 3, r: 1.0 });
   }
+}
+
+// A rill: a narrow raised channel fed by a spout in a wall, running straight
+// across the terrace. Stepping slabs cross it at every cell boundary, so it
+// never cuts the terrace in two. At a drop it spills through a scupper into a
+// basin (or water) below; otherwise it ends in a small basin of its own.
+function rill(ctx, P, y, sides) {
+  const { S, rng, out } = ctx;
+  let best = null;
+  for (let d = 0; d < 4; d++) {
+    const r = (d + 2) % 4;
+    const len = d % 2 === 0 ? P.w : P.d;
+    const lat = d % 2 === 0 ? P.d : P.w;
+    if (len < 3 || lat < 3) continue;
+    for (const e of sides[d]) {
+      if (e.rel !== 'up' || e.wall < LEVEL_H - 0.05) continue;
+      const lp = d % 2 === 0 ? e.j - P.z0 : e.i - P.x0;
+      if (lp === 0 || lp === lat - 1) continue;
+      const cells = [];
+      for (let k = 0; k < len; k++) {
+        const i = e.i + DX[r] * k;
+        const j = e.j + DZ[r] * k;
+        const c = j * N + i;
+        if (ctx.used[c] !== 0 || hasDeck(ctx, i, j) || S.kind[c] !== K_FLOOR) break;
+        // the paths either side of it stay level floor
+        const side = [1, -1].every((sg) => {
+          const a = i + DZ[r] * sg;
+          const b = j + DX[r] * sg;
+          const q = b * N + a;
+          return S.kind[q] === K_FLOOR && Math.abs(S.base[q] - y) < 0.01 && ctx.used[q] !== 1;
+        });
+        if (!side) break;
+        cells.push([i, j]);
+      }
+      if (cells.length < len) continue;
+      const score = -Math.abs(lp - (lat - 1) / 2) + rng() * 0.6;
+      if (!best || score > best.score) best = { d, r, cells, score, e };
+    }
+  }
+  if (!best) return false;
+  const { d, r, cells, e } = best;
+  const n = cells.length;
+  const [lx, lz] = edgeCentre(e.i, e.j, d); // on the wall face
+  const last = cells[n - 1];
+  // where the water goes at the far end
+  let spill = null;
+  const end = sides[r].find((q) => q.i === last[0] && q.j === last[1]);
+  if (end && (end.rel === 'down' || end.rel === 'water')) {
+    const ni = last[0] + DX[r];
+    const nj = last[1] + DZ[r];
+    const nb = ctx.look(ni, nj);
+    const drop = y - nb.base;
+    const inBlock = ni >= 0 && nj >= 0 && ni < N && nj < N;
+    const deckFree = nb.deck !== nb.deck;
+    if (nb.kind === K_WATER && deckFree && drop > 1.2) spill = { y: nb.base, basin: false };
+    else if (inBlock && nb.kind === K_FLOOR && deckFree && drop >= 2.5 && ctx.used[nj * N + ni] === 0 && S.plotId[nj * N + ni] > P.id) {
+      spill = { y: nb.base, basin: true };
+      const [ex, ez] = edgeCentre(last[0], last[1], r);
+      const bx = ex + DX[r] * 0.8;
+      const bz = ez + DZ[r] * 0.8;
+      out.circles.push([bx, bz, 0.75, nb.base]);
+      ctx.used[nj * N + ni] = 3;
+    }
+  }
+  out.feats.push({ t: 'rill', x: lx, z: lz, y, rot: dirAngle(r), n, spill });
+  // collision: the channel between the slabs, the head basin, the end basin
+  const L = n * CELL;
+  const seg = (z0, z1, hw) => out.boxes.push(localBox(lx, lz, r, -hw, z0, hw, z1, y));
+  seg(0, 0.9, 0.68);
+  for (let k = 0; k < n; k++) {
+    const z0 = k === 0 ? 0.9 : k * CELL + 0.5;
+    const z1 = k === n - 1 ? L : (k + 1) * CELL - 0.5;
+    if (z1 > z0) seg(z0, z1, 0.47);
+  }
+  if (!spill) seg(L - 1.8, L - 0.2, 0.8);
+  for (const [i, j] of cells) ctx.used[j * N + i] = 3;
+  ctx.quiet.add(e.j * N + e.i);
+  return true;
+}
+
+// Axis-aligned box of a rectangle given in a frame at (ox, oz) whose +z runs
+// along direction r and +x across it.
+function localBox(ox, oz, r, x0, z0, x1, z1, y) {
+  const fx = DX[r];
+  const fz = DZ[r];
+  const sx = DZ[r];
+  const sz = -DX[r];
+  const xs = [];
+  const zs = [];
+  for (const [a, b] of [[x0, z0], [x1, z0], [x1, z1], [x0, z1]]) {
+    xs.push(ox + sx * a + fx * b);
+    zs.push(oz + sz * a + fz * b);
+  }
+  return [Math.min(...xs), Math.min(...zs), Math.max(...xs), Math.max(...zs), y];
+}
+
+// Along a wall rising from a terrace: now and then a carved relief across two
+// bays, or a wall fountain with a basin at its foot. Returns the bays taken.
+function wallPieces(ctx, P, run, d, y, doorAt, program) {
+  const { rng, out } = ctx;
+  const taken = new Set();
+  if (!P.reachable || program === 'summit' || program === 'cloister') return taken;
+  const free = (e) => e && e.u === 0 && e.t !== doorAt;
+  const face = (d + 2) % 4;
+  const r = rng();
+  if (run.length >= 2 && r < 0.1) {
+    const pairs = [];
+    for (let k = 0; k + 1 < run.length; k++) if (free(run[k]) && free(run[k + 1])) pairs.push(k);
+    if (!pairs.length) return taken;
+    const mid = (run.length - 2) / 2;
+    pairs.sort((a, b) => Math.abs(a - mid) - Math.abs(b - mid));
+    const k = pairs[0];
+    const [ax, az] = edgeCentre(run[k].i, run[k].j, d);
+    const [bx, bz] = edgeCentre(run[k + 1].i, run[k + 1].j, d);
+    out.feats.push({ t: 'relief', x: (ax + bx) / 2, z: (az + bz) / 2, y, rot: dirAngle(face), kind: rng() < 0.5 ? 'lunette' : 'panel', seed: rng() * 1e6 });
+    for (const e of [run[k], run[k + 1]]) {
+      taken.add(e.t);
+      ctx.used[e.j * N + e.i] = 2;
+    }
+  } else if (r < 0.17) {
+    const cand = run.filter(free);
+    if (!cand.length) return taken;
+    const e = cand[Math.floor(rng() * cand.length)];
+    const [cx, cz] = edgeCentre(e.i, e.j, d);
+    out.feats.push({ t: 'wallfountain', x: cx, z: cz, y, rot: dirAngle(face) });
+    out.boxes.push(orientedBox(cx - DX[d] * 0.45, cz - DZ[d] * 0.45, d, 1.7, 0.9, y));
+    taken.add(e.t);
+    ctx.used[e.j * N + e.i] = 3;
+  }
+  return taken;
 }
 
 function decorateStairs(ctx) {
