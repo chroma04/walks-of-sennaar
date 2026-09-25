@@ -64,12 +64,22 @@ export class Crowd {
       list.push(lead);
       if (s.mode === 'lead') {
         lead.followers = [];
-        lead.trail = [{ x: at.x, y: at.y, z: at.z }];
+        // face whichever way leaves the most room behind for the line
+        const steps = Math.ceil((s.count * SPACING) / TRAIL_STEP);
+        lead.trail = [];
+        for (let q = 0; q < 4 && lead.trail.length <= steps; q++) {
+          const rot = s.rot + (q * Math.PI) / 2;
+          const trail = this.backTrail(at, rot, steps);
+          if (trail.length > lead.trail.length) [lead.trail, lead.heading] = [trail, rot];
+        }
         lead.trailLen = 0;
         for (let k = 0; k < s.count; k++) {
-          const f = this.makeAgent(at, s.rot, 'follow', rng, `${lead.id}/${k}`);
+          const f = this.makeAgent(at, lead.heading, 'follow', rng, `${lead.id}/${k}`);
           f.leader = lead;
           f.rank = k + 1;
+          // start strung out behind the leader rather than all on one spot
+          Object.assign(f, this.trailPoint(lead, f.rank * SPACING));
+          f.home = { x: f.x, y: f.y, z: f.z };
           lead.followers.push(f);
           list.push(f);
         }
@@ -356,11 +366,25 @@ export class Crowd {
     if (t.length > keep) t.splice(0, t.length - keep);
   }
 
-  // Followers walk exactly where their leader walked, a fixed distance behind.
-  trailFollow(f, dt) {
-    const L = f.leader;
+  // A trail as if the leader had just walked in along its heading: as far
+  // back as one can walk from where it stands, oldest point first.
+  backTrail(at, rot, steps) {
+    const bx = -Math.sin(rot) * TRAIL_STEP;
+    const bz = -Math.cos(rot) * TRAIL_STEP;
+    const t = [{ x: at.x, y: at.y, z: at.z }];
+    let p = t[0];
+    for (let k = 0; k < steps; k++) {
+      const h = this.world.canTraverse(p.x, p.z, p.y, p.x + bx, p.z + bz, NPC_RADIUS);
+      if (Number.isNaN(h)) break;
+      p = { x: p.x + bx, y: h, z: p.z + bz };
+      t.push(p);
+    }
+    return t.reverse();
+  }
+
+  // The point `want` metres back along the leader's trail.
+  trailPoint(L, want) {
     const t = L.trail;
-    let want = f.rank * SPACING;
     let x = L.x;
     let y = L.y;
     let z = L.z;
@@ -368,17 +392,19 @@ export class Crowd {
       const d = Math.hypot(t[k].x - x, t[k].z - z);
       if (d >= want) {
         const s = want / d;
-        x += (t[k].x - x) * s;
-        y += (t[k].y - y) * s;
-        z += (t[k].z - z) * s;
-        want = 0;
-        break;
+        return { x: x + (t[k].x - x) * s, y: y + (t[k].y - y) * s, z: z + (t[k].z - z) * s };
       }
       want -= d;
       x = t[k].x;
       y = t[k].y;
       z = t[k].z;
     }
+    return { x, y, z };
+  }
+
+  // Followers walk exactly where their leader walked, a fixed distance behind.
+  trailFollow(f, dt) {
+    const { x, y, z } = this.trailPoint(f.leader, f.rank * SPACING);
     const mx = x - f.x;
     const mz = z - f.z;
     const moved = Math.hypot(mx, mz);

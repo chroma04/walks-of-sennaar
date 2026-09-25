@@ -36,9 +36,13 @@ body {
   cursor: crosshair;
 }
 
+.gone,
+.gone * {
+  pointer-events: none !important;
+}
+
 .gone {
   opacity: 0;
-  pointer-events: none !important;
 }
 
 #title {

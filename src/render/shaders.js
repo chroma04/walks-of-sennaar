@@ -173,7 +173,7 @@ void main() {
     float d1 = abs(vUv.x - 0.32) / 0.075 + abs(vUv.y - 0.5) / 0.055;
     float d2 = abs(vUv.x - 0.68) / 0.075 + abs(vUv.y - 0.5) / 0.055;
     float dia = step(min(d1, d2), 1.0);
-    col = mix(col, mix(uPalette[15], uPalette[14], 1.0 - light), dia);
+    col = mix(col, mix(uPalette[15], uPalette[14], light), dia);
     col = mix(col, vec3(0.2, 0.08, 0.07), split);
   } else if (m == 5) {
     // water: drifting sparkle
@@ -285,6 +285,8 @@ uniform vec3 uInk;
 uniform vec3 uSkyTop;
 uniform vec3 uSkyBottom;
 uniform float uTime;
+uniform vec4 uCut;      // as in the world pass
+uniform vec2 uResolution;
 
 float viewZ(float d) {
   float z = d * 2.0 - 1.0;
@@ -301,6 +303,11 @@ void main() {
   vec3 col = texture(tColor, vUv).rgb;
   if (dC >= 1.0) {
     col = mix(uSkyBottom, uSkyTop, smoothstep(0.0, 1.0, vUv.y));
+    // the cut looks into hollow masonry: show a dark section, not the sky
+    if (uCut.w > 0.0) {
+      vec2 dd = (vUv * 2.0 - 1.0 - uCut.xy) * vec2(uResolution.x / uResolution.y, 0.75);
+      if (length(dd) < uCut.w) col = mix(uSkyBottom, uInk, 0.6);
+    }
   }
 
   float zC = viewZ(dC);

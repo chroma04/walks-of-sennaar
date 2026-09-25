@@ -59,6 +59,8 @@ export class Input {
     if (this.pointers.size === 2) {
       this.hold = null;
       const [a, b] = [...this.pointers.values()];
+      // a finger that took part in a pinch never becomes a tap or a hold
+      a.multi = b.multi = true;
       this.pinch = { d: Math.hypot(a.x - b.x, a.y - b.y), a: Math.atan2(b.y - a.y, b.x - a.x) };
     }
   }
@@ -101,7 +103,7 @@ export class Input {
     }
     const wasHold = !!this.hold;
     this.hold = null;
-    if (p.button !== 0 || wasHold) return;
+    if (p.button !== 0 || wasHold || p.multi) return;
     const dt = performance.now() - p.t;
     if (dt < 350 && p.moved < 12) {
       const now = performance.now();
@@ -112,12 +114,14 @@ export class Input {
   }
 
   // called every frame; promotes long presses into steering
-  poll() {
+  poll(dt = 1 / 60) {
     const now = performance.now();
     if (this.pointers.size === 1 && !this.hold) {
       const p = [...this.pointers.values()][0];
-      if (p.button === 0 && now - p.t > 260 && p.moved < 40) this.hold = { x: p.x, y: p.y };
+      if (p.button === 0 && !p.multi && now - p.t > 260 && p.moved < 40) this.hold = { x: p.x, y: p.y };
     }
+    // held keys and sticks are rates, tuned at 60 frames per second
+    const f = dt * 60;
     const out = {
       x: 0,
       y: 0,
@@ -142,8 +146,8 @@ export class Input {
     if (k.has('KeyS') || k.has('ArrowDown')) out.y -= 1;
     if (k.has('KeyD') || k.has('ArrowRight')) out.x += 1;
     if (k.has('KeyA') || k.has('ArrowLeft')) out.x -= 1;
-    if (k.has('Equal') || k.has('NumpadAdd')) out.zoom *= 0.98;
-    if (k.has('Minus') || k.has('NumpadSubtract')) out.zoom *= 1.02;
+    if (k.has('Equal') || k.has('NumpadAdd')) out.zoom *= 0.98 ** f;
+    if (k.has('Minus') || k.has('NumpadSubtract')) out.zoom *= 1.02 ** f;
 
     // gamepad
     const pads = navigator.getGamepads ? navigator.getGamepads() : [];
@@ -152,9 +156,9 @@ export class Input {
       const dz = (v) => (Math.abs(v) < 0.18 ? 0 : v);
       out.x += dz(g.axes[0] || 0);
       out.y -= dz(g.axes[1] || 0);
-      out.rotate += dz(g.axes[2] || 0) * 0.04;
+      out.rotate += dz(g.axes[2] || 0) * 0.04 * f;
       const zin = (g.buttons[6]?.value || 0) - (g.buttons[7]?.value || 0);
-      out.zoom *= 1 + zin * 0.02;
+      out.zoom *= (1 + zin * 0.02) ** f;
       if (g.buttons[0]?.pressed || g.buttons[10]?.pressed) out.run = true;
       if (g.buttons[4]?.pressed && !this.lb) out.rotateSteps -= 1;
       if (g.buttons[5]?.pressed && !this.rb) out.rotateSteps += 1;
