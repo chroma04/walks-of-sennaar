@@ -26,6 +26,8 @@ export function decorate(S, look) {
   const ctx = { S, look, rng, out, used, abut: new Set(), quiet: new Set() };
   for (const b of S.bridges) ctx.abut.add(b.a).add(b.b);
 
+  // lock gates first: their winches claim quay cells before anything else
+  if (S.feature && S.feature.kind === 'canal') for (const P of S.plots) if (P.water) lockGates(ctx, P);
   for (const P of S.plots) {
     if (P.building) decorateBuilding(ctx, P);
     else if (P.water) decorateWater(ctx, P);
@@ -94,6 +96,49 @@ function regionUsed(ctx, x0, z0, x1, z1, allow2 = false) {
   return false;
 }
 
+// Whether props may take these cells of plot P: the rest of its open floor must
+// stay in one piece, and every cell a prop stands in must still touch it (a
+// prop fills only part of its cell, and the rest has to stay reachable).
+function roomFor(ctx, P, cells) {
+  const { S } = ctx;
+  const take = new Set(cells.map(([i, j]) => j * N + i));
+  const floor = (c) => S.kind[c] === K_FLOOR || S.kind[c] === K_LANDING;
+  const free = (i, j) => {
+    if (!inside(P, i, j)) return false;
+    const c = j * N + i;
+    return floor(c) && ctx.used[c] !== 3 && !take.has(c);
+  };
+  let total = 0;
+  let start = -1;
+  const props = [];
+  for (let j = P.z0; j < P.z1; j++) {
+    for (let i = P.x0; i < P.x1; i++) {
+      const c = j * N + i;
+      if (free(i, j)) {
+        total++;
+        if (start < 0) start = c;
+      } else if (floor(c) && (ctx.used[c] === 3 || take.has(c))) props.push([i, j]);
+    }
+  }
+  if (!total) return false;
+  const seen = new Set([start]);
+  const stack = [start];
+  while (stack.length) {
+    const c = stack.pop();
+    const i = c % N;
+    const j = (c - i) / N;
+    for (let d = 0; d < 4; d++) {
+      const a = i + DX[d];
+      const b = j + DZ[d];
+      if (!free(a, b) || seen.has(b * N + a)) continue;
+      seen.add(b * N + a);
+      stack.push(b * N + a);
+    }
+  }
+  if (seen.size !== total) return false;
+  return props.every(([i, j]) => [0, 1, 2, 3].some((d) => free(i + DX[d], j + DZ[d])));
+}
+
 function mark(ctx, x0, z0, x1, z1, v = 3) {
   for (let j = z0; j < z1; j++) for (let i = x0; i < x1; i++) ctx.used[j * N + i] = v;
 }
@@ -137,7 +182,7 @@ function decorateTerrace(ctx, P) {
   }
   // set pieces furnish themselves; the generic scatter below stays off them
   const open = program === 'plaza';
-  if (open && P.reachable && area >= 24 && rng() < 0.16 && rill(ctx, P, y, sides)) sides = [0, 1, 2, 3].map((d) => sideInfo(ctx, P, d));
+  if (open && P.reachable && area >= 24 && rng() < 0.1 + 0.3 * ctx.S.district.wet && rill(ctx, P, y, sides)) sides = [0, 1, 2, 3].map((d) => sideInfo(ctx, P, d));
   if (program === 'summit' && P.reachable) shrine(ctx, P, y, F.shrine);
   else if (program === 'court' && P.reachable) court(ctx, P, y, F.garden);
   else if (program === 'parterre' && P.reachable) court(ctx, P, y, rng() < 0.55);
@@ -157,14 +202,17 @@ function decorateTerrace(ctx, P) {
       const planter = new Set();
       const piece = wallPieces(ctx, P, run, d, y, doorAt, program);
       if (program !== 'cloister' && program !== 'summit' && P.reachable) {
+        // (usage read afresh: a centrepiece may have claimed cells since)
+        const u = (e) => ctx.used[e.j * N + e.i];
         for (let k = 0; k < run.length; k++) {
           const e = run[k];
-          if (e.t === doorAt || e.u !== 0 || piece.has(e.t) || rng() > (program === 'tier' ? 0.3 : 0.22)) continue;
+          if (e.t === doorAt || u(e) !== 0 || piece.has(e.t) || rng() > (program === 'tier' ? 0.3 : 0.22)) continue;
           let len = 0;
           const want = 2 + Math.floor(rng() * 2);
-          while (k + len < run.length && len < want && run[k + len].u === 0 && run[k + len].t !== doorAt && !piece.has(run[k + len].t)) len++;
+          while (k + len < run.length && len < want && u(run[k + len]) === 0 && run[k + len].t !== doorAt && !piece.has(run[k + len].t)) len++;
           if (len < 1) continue;
           const seg = run.slice(k, k + len);
+          if (!roomFor(ctx, P, seg.map((q) => [q.i, q.j]))) continue;
           placePlanter(ctx, seg, d, y);
           for (const q of seg) planter.add(q.t);
           k += len;
@@ -175,12 +223,14 @@ function decorateTerrace(ctx, P) {
         const isDoor = e.t === doorAt;
         const quiet = planter.has(e.t) || piece.has(e.t) || ctx.quiet.has(e.j * N + e.i);
         out.band0.push({ i: e.i, j: e.j, d, y, door: isDoor, low: quiet, owner: [e.owner.bx, e.owner.bz, e.owner.plot] });
-        if (!isDoor && !quiet && e.u === 0 && P.reachable && program !== 'summit' && rng() < (program === 'quay' ? 0.12 : 0.06)) {
+        // (not in the one-cell walk round a cloister, which a bench would close)
+        if (!isDoor && !quiet && ctx.used[e.j * N + e.i] === 0 && P.reachable && program !== 'summit' && program !== 'cloister' && rng() < (program === 'quay' ? 0.12 : 0.06) && roomFor(ctx, P, [[e.i, e.j]])) {
           // bench against the wall
           const [cx, cz] = edgeCentre(e.i, e.j, d);
           const inset = 0.45;
           out.feats.push({ t: 'bench', x: cx - DX[d] * inset, z: cz - DZ[d] * inset, y, rot: dirAngle(out_) });
           out.boxes.push(orientedBox(cx - DX[d] * inset, cz - DZ[d] * inset, d, 1.5, 0.5, y));
+          ctx.used[e.j * N + e.i] = 3;
         }
       }
     }
@@ -242,7 +292,7 @@ function decorateTerrace(ctx, P) {
         const benches = program !== 'tier' && rng() < 0.3;
         for (let k = 1; k < run.length - 1; k += 2 + (rng() < 0.5 ? 1 : 0)) {
           const e = run[k];
-          if (ctx.used[e.j * N + e.i] !== 0) continue;
+          if (ctx.used[e.j * N + e.i] !== 0 || !roomFor(ctx, P, [[e.i, e.j]])) continue;
           const [cx, cz] = edgeCentre(e.i, e.j, d);
           if (benches) {
             const x = cx - DX[d] * 0.62;
@@ -283,7 +333,7 @@ function decorateTerrace(ctx, P) {
       out.boxes.push([px - 0.4, pz - 0.4, px + 0.4, pz + 0.4, y]);
       continue;
     }
-    if (!P.reachable || ctx.used[j * N + i] !== 0) continue;
+    if (!P.reachable || ctx.used[j * N + i] !== 0 || !roomFor(ctx, P, [[i, j]])) continue;
     if (ra === 'up' && rb === 'up' && rng() < 0.5) {
       if (rng() < 0.5) {
         out.feats.push({ t: 'urns', x: cx, z: cz, y, n: 1 + Math.floor(rng() * 3), seed: rng() * 1e6 });
@@ -307,7 +357,7 @@ function decorateTerrace(ctx, P) {
     for (let tries = 0; tries < want * 6 && placed < want; tries++) {
       const i = P.x0 + 1 + Math.floor(rng() * (P.w - 2));
       const j = P.z0 + 1 + Math.floor(rng() * (P.d - 2));
-      if (ctx.used[j * N + i] !== 0 || regionUsed(ctx, i - 1, j - 1, i + 2, j + 2, true)) continue;
+      if (ctx.used[j * N + i] !== 0 || regionUsed(ctx, i - 1, j - 1, i + 2, j + 2, true) || !roomFor(ctx, P, [[i, j]])) continue;
       const x = (i + 0.5) * CELL;
       const z = (j + 0.5) * CELL;
       const r = rng();
@@ -548,17 +598,18 @@ function centrePiece(ctx, P, y, forced = null, at = null) {
       mark(ctx, i0, j0, i1, j1, 2);
       return true;
     } else if (type === 'sarchfree') {
+      // (at the spot just checked, i0 j0, not the plot's middle)
       const alongX = rng() < 0.5;
-      out.feats.push({ t: 'sarch', x: (ci + 0.5) * CELL, z: (cj + 0.5) * CELL, y, rot: alongX ? 0 : Math.PI / 2, span: 2.2 });
-      const px = (ci + 0.5) * CELL;
-      const pz = (cj + 0.5) * CELL;
+      const px = (i0 + 0.5) * CELL;
+      const pz = (j0 + 0.5) * CELL;
+      out.feats.push({ t: 'sarch', x: px, z: pz, y, rot: alongX ? 0 : Math.PI / 2, span: 2.2 });
       for (const s of [-1, 1]) {
         const ox = alongX ? s * 1.4 : 0;
         const oz = alongX ? 0 : s * 1.4;
         out.boxes.push([px + ox - 0.3, pz + oz - 0.3, px + ox + 0.3, pz + oz + 0.3, y]);
       }
       // its piers stand in the neighbouring cells: keep props clear of them
-      for (let j = cj - 1; j <= cj + 1; j++) for (let i = ci - 1; i <= ci + 1; i++) if (ctx.used[j * N + i] === 0) ctx.used[j * N + i] = 2;
+      for (let j = j0 - 1; j <= j0 + 1; j++) for (let i = i0 - 1; i <= i0 + 1; i++) if (ctx.used[j * N + i] === 0) ctx.used[j * N + i] = 2;
       return true;
     }
     mark(ctx, i0, j0, i1, j1, 3);
@@ -666,18 +717,22 @@ function quay(ctx, P, y) {
   }
 }
 
-// Canal and cascade water. Where a reach meets a lower one the water pours over
-// a weir (some with a sluice gate on the crest); where it meets a high wall it
-// comes out of a spout or a grated culvert, or drains into one.
+// Water. Where a cascade reach meets a lower one the water pours over a weir
+// (some with a sluice gate on the crest); where a reach or a flooded well meets
+// a high wall it comes out of a spout or a grated culvert, or drains into one.
+// A stepwell's tank holds an islet; a reflecting pool gets rows of jets.
 function decorateWater(ctx, P) {
   const { out, S, rng } = ctx;
   const F = S.feature;
   const y = P.level * LEVEL_H;
   const ys = y - WATER_DROP;
-  const alongX = F && F.alongX;
+  const kind = P.feature ? F.kind : P.pool ? 'pool' : 'well';
+  if (kind === 'tank') return islet(ctx, P, ys, F.islet);
+  if (kind === 'pool') return poolJets(ctx, P, y, ys);
+  const alongX = P.feature ? F.alongX : P.w >= P.d;
   const ends = alongX ? [[P.x0, 2], [P.x1 - 1, 0]] : [[P.z0, 3], [P.z1 - 1, 1]];
   const width = (alongX ? P.d : P.w) * CELL;
-  const cascade = F && F.kind === 'cascade';
+  const cascade = kind === 'cascade';
   for (const [e, d] of ends) {
     const x = alongX ? (d === 0 ? P.x1 * CELL : P.x0 * CELL) : ((P.x0 + P.x1) / 2) * CELL;
     const z = alongX ? ((P.z0 + P.z1) / 2) * CELL : d === 1 ? P.z1 * CELL : P.z0 * CELL;
@@ -686,7 +741,7 @@ function decorateWater(ctx, P) {
     const n = ctx.look(ni, nj);
     const rot = dirAngle(d);
     if (n.kind === K_WATER) {
-      if (n.base > ys - 0.5) continue;
+      if (!cascade || n.base > ys - 0.5) continue;
       out.feats.push({ t: 'weir', x, z, y: ys, drop: ys - n.base, w: width, rot });
       // a sluice gate on the crest, clear of any bridge overhead
       const row = sideCells(P, d);
@@ -702,7 +757,135 @@ function decorateWater(ctx, P) {
     if (cascade && !head && P.step !== P.steps - 1) continue;
     const inward = dirAngle((d + 2) % 4);
     if (!cascade && rng() < 0.5) out.feats.push({ t: 'spout', x, z, y, rot: inward });
-    else out.feats.push({ t: 'culvert', x, z, y: ys, rot: inward, w: Math.min(width - 1.0, 4.2), pour: head, room: n.base - ys });
+    else {
+      const w = Math.min(width - 1.0, 4.2);
+      // the water it pours churns white below it (drawn with the water)
+      const churn = [];
+      if (head) {
+        for (const [i, j] of sideCells(P, d)) {
+          const off = alongX ? (j + 0.5) * CELL - z : (i + 0.5) * CELL - x;
+          if (Math.abs(off) < w / 2 + 0.6) churn.push([i, j, d]);
+        }
+      }
+      out.feats.push({ t: 'culvert', x, z, y: ys, rot: inward, w, pour: head, room: n.base - ys, churn });
+    }
+  }
+}
+
+// Mitre gates across a canal: two crimson leaves meeting in a shallow point,
+// with a winch on the quay beside each heel. Kept clear of bridges.
+function lockGates(ctx, P) {
+  const { S, rng, out } = ctx;
+  const alongX = S.feature.alongX;
+  const len = alongX ? P.w : P.d;
+  const a0 = alongX ? P.x0 : P.z0;
+  const c0 = alongX ? P.z0 : P.x0;
+  const c1 = alongX ? P.z1 : P.x1;
+  if (rng() < 0.15) return;
+  const want = len >= 20 && rng() < 0.55 ? 2 : 1;
+  const ys = P.level * LEVEL_H - WATER_DROP;
+  const quayY = P.level * LEVEL_H;
+  const cell = (a, c) => (alongX ? [a, c] : [c, a]);
+  const cand = [];
+  for (let a = a0 + 3; a <= a0 + len - 3; a++) {
+    const u = (a - a0) / len;
+    cand.push({ a, score: -Math.min(Math.abs(u - 0.33), Math.abs(u - 0.67)) * 3 + rng() * 0.5 });
+  }
+  cand.sort((p, q) => q.score - p.score);
+  const placed = [];
+  for (const { a } of cand) {
+    if (placed.length >= want) break;
+    if (placed.some((b) => Math.abs(b - a) < 6)) continue;
+    let clear = true;
+    for (let k = a - 2; k <= a + 1 && clear; k++) {
+      for (let c = c0 - 2; c < c1 + 2 && clear; c++) {
+        const [i, j] = cell(k, c);
+        if (i >= 0 && j >= 0 && i < N && j < N && hasDeck(ctx, i, j)) clear = false;
+      }
+    }
+    if (!clear) continue;
+    // a winch on each quay, on the downstream side of the gate line
+    const posts = [
+      [cell(a, c0 - 1), alongX ? 1 : 0],
+      [cell(a, c1), alongX ? 3 : 2],
+    ];
+    const ok = posts.every(([[i, j]]) => {
+      if (i < 0 || j < 0 || i >= N || j >= N) return false;
+      const c = j * N + i;
+      return S.kind[c] === K_FLOOR && Math.abs(S.base[c] - quayY) < 0.01 && ctx.used[c] === 0 && roomFor(ctx, S.plots[S.plotId[c]], [[i, j]]);
+    });
+    if (!ok) continue;
+    placed.push(a);
+    const w = (c1 - c0) * CELL;
+    const mid = ((c0 + c1) / 2) * CELL;
+    const along = a * CELL;
+    const [gx, gz] = alongX ? [along, mid] : [mid, along];
+    const down = alongX ? 0 : 1;
+    out.feats.push({ t: 'lockgate', x: gx, z: gz, y: ys, w, rot: dirAngle(down), rise: WATER_DROP, seed: rng() * 1e6 });
+    for (const [[i, j], toward] of posts) {
+      // toward: from the quay cell over the water
+      const inX = (i + 0.5) * CELL + DX[toward] * 0.45;
+      const inZ = (j + 0.5) * CELL + DZ[toward] * 0.45;
+      const px = alongX ? along + 0.75 : inX;
+      const pz = alongX ? inZ : along + 0.75;
+      out.feats.push({ t: 'winch', x: px, z: pz, y: quayY, rot: dirAngle(toward) });
+      out.circles.push([px, pz, 0.42, quayY]);
+      ctx.used[j * N + i] = 3;
+    }
+  }
+}
+
+// A reflecting pool flush with its ring of terraces. A long one gets a row of
+// jets arching in from each side; a squarish one an islet with a plume.
+function poolJets(ctx, P, y, ys) {
+  const { out, rng } = ctx;
+  const alongX = P.w >= P.d;
+  const len = alongX ? P.w : P.d;
+  const wide = alongX ? P.d : P.w;
+  if (len - wide < 2 && wide >= 4) return islet(ctx, P, ys, 'jet');
+  const at = [];
+  for (let k = 0; k < len; k++) {
+    // no jets under a bridge
+    let free = true;
+    for (let c = 0; c < wide && free; c++) {
+      const i = alongX ? P.x0 + k : P.x0 + c;
+      const j = alongX ? P.z0 + c : P.z0 + k;
+      if (hasDeck(ctx, i, j)) free = false;
+    }
+    if (free) at.push((k + 0.5) * CELL - (len * CELL) / 2);
+  }
+  if (!at.length) return;
+  const x = ((P.x0 + P.x1) / 2) * CELL;
+  const z = ((P.z0 + P.z1) / 2) * CELL;
+  out.feats.push({ t: 'jets', x, z, y: ys, rot: alongX ? Math.PI / 2 : 0, width: wide * CELL, rim: y - ys, at, both: wide >= 2 && rng() < 0.8 });
+}
+
+// An islet in the middle of the water: a plinth carrying a domed pavilion, or
+// a basin with a plume. Devotees kneel on the ledges round it.
+function islet(ctx, P, ys, kind) {
+  const { out, S, rng } = ctx;
+  const x = ((P.x0 + P.x1) / 2) * CELL;
+  const z = ((P.z0 + P.z1) / 2) * CELL;
+  const room = Math.min(P.w, P.d) * CELL;
+  if (room < 5) return;
+  if (kind === 'pavilion' && room < 9) kind = 'jet';
+  out.feats.push({ t: 'islet', x, z, y: ys, kind, size: kind === 'pavilion' ? 5.2 : 2.6, rise: WATER_DROP + 0.1, seed: rng() * 1e6 });
+  if (!P.feature) return;
+  const y = P.level * LEVEL_H;
+  const n = 2 + Math.floor(rng() * 3);
+  for (let k = 0; k < n; k++) {
+    const d = Math.floor(rng() * 4);
+    const cells = sideCells(P, d);
+    const [wi, wj] = cells[Math.floor(rng() * cells.length)];
+    const i = wi + DX[d];
+    const j = wj + DZ[d];
+    if (i < 0 || j < 0 || i >= N || j >= N) continue;
+    const c = j * N + i;
+    if (S.kind[c] !== K_FLOOR || ctx.used[c] !== 0 || Math.abs(S.base[c] - y) > 0.01) continue;
+    const px = (i + 0.5) * CELL - DX[d] * 0.3;
+    const pz = (j + 0.5) * CELL - DZ[d] * 0.3;
+    out.spawns.push({ x: px, y, z: pz, rot: dirAngle((d + 2) % 4), mode: 'pray', seed: Math.floor(rng() * 1e6) });
+    ctx.used[c] = 3;
   }
 }
 
@@ -790,7 +973,7 @@ function rill(ctx, P, y, sides) {
     const inBlock = ni >= 0 && nj >= 0 && ni < N && nj < N;
     const deckFree = nb.deck !== nb.deck;
     if (nb.kind === K_WATER && deckFree && drop > 1.2) spill = { y: nb.base, basin: false };
-    else if (inBlock && nb.kind === K_FLOOR && deckFree && drop >= 2.5 && ctx.used[nj * N + ni] === 0 && S.plotId[nj * N + ni] > P.id) {
+    else if (inBlock && nb.kind === K_FLOOR && deckFree && drop >= 2.5 && ctx.used[nj * N + ni] === 0 && S.plotId[nj * N + ni] > P.id && roomFor(ctx, S.plots[S.plotId[nj * N + ni]], [[ni, nj]])) {
       spill = { y: nb.base, basin: true };
       const [ex, ez] = edgeCentre(last[0], last[1], r);
       const bx = ex + DX[r] * 0.8;
@@ -837,7 +1020,7 @@ function wallPieces(ctx, P, run, d, y, doorAt, program) {
   const { rng, out } = ctx;
   const taken = new Set();
   if (!P.reachable || program === 'summit' || program === 'cloister') return taken;
-  const free = (e) => e && e.u === 0 && e.t !== doorAt;
+  const free = (e) => e && ctx.used[e.j * N + e.i] === 0 && e.t !== doorAt;
   const face = (d + 2) % 4;
   const r = rng();
   if (run.length >= 2 && r < 0.1) {
@@ -855,7 +1038,7 @@ function wallPieces(ctx, P, run, d, y, doorAt, program) {
       ctx.used[e.j * N + e.i] = 2;
     }
   } else if (r < 0.17) {
-    const cand = run.filter(free);
+    const cand = run.filter((e) => free(e) && roomFor(ctx, P, [[e.i, e.j]]));
     if (!cand.length) return taken;
     const e = cand[Math.floor(rng() * cand.length)];
     const [cx, cz] = edgeCentre(e.i, e.j, d);
@@ -890,14 +1073,23 @@ function decorateStairs(ctx) {
       rot = dirAngle(s.dir);
     }
     const span = s.w * CELL + 0.2;
-    out.feats.push({ t: 'sarch', x: cx, z: cz, y: s.hT, rot, span });
     const ax = Math.cos(rot);
     const az = -Math.sin(rot);
-    for (const sg of [-1, 1]) {
-      const px = cx + ax * sg * (span / 2 + 0.25);
-      const pz = cz + az * sg * (span / 2 + 0.25);
-      out.boxes.push([px - 0.3, pz - 0.3, px + 0.3, pz + 0.3, s.hT]);
-    }
+    const piers = [-1, 1].map((sg) => [cx + ax * sg * (span / 2 + 0.25), cz + az * sg * (span / 2 + 0.25)]);
+    // its piers stand in the cells either side: never close to furniture, which
+    // would shut the way past them
+    const blocked = piers.some(([px, pz]) => {
+      const r = 0.3 + 0.8; // the pier, and room to walk by it
+      for (let j = Math.floor((pz - r) / CELL); j <= Math.floor((pz + r) / CELL); j++) {
+        for (let i = Math.floor((px - r) / CELL); i <= Math.floor((px + r) / CELL); i++) {
+          if (i >= 0 && j >= 0 && i < N && j < N && ctx.used[j * N + i] === 3) return true;
+        }
+      }
+      return false;
+    });
+    if (blocked) continue;
+    out.feats.push({ t: 'sarch', x: cx, z: cz, y: s.hT, rot, span });
+    for (const [px, pz] of piers) out.boxes.push([px - 0.3, pz - 0.3, px + 0.3, pz + 0.3, s.hT]);
   }
 }
 

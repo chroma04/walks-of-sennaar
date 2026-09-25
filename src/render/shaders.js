@@ -8,7 +8,9 @@ export const worldVertex = /* glsl */ `
 in vec2 aMat;
 uniform float uTime;
 out vec3 vWorld;
-out vec3 vLocal;
+// centroid: with multisampling, edge pixels would otherwise read a position in
+// the next cell over, and the water's cell-local foam would leak across
+centroid out vec3 vLocal;
 out vec3 vNormal;
 out vec2 vUv;
 flat out int vMat;
@@ -68,7 +70,7 @@ uniform vec3 uFog;
 uniform vec2 uFogRange;
 
 in vec3 vWorld;
-in vec3 vLocal;
+centroid in vec3 vLocal;
 in vec3 vNormal;
 in vec2 vUv;
 flat in int vMat;
@@ -109,6 +111,48 @@ float shadowTap4(sampler2D map, vec2 texel, vec3 c) {
   float s01 = c.z - 0.0006 <= texture(map, b + vec2(0.0, texel.y)).r ? 1.0 : 0.0;
   float s11 = c.z - 0.0006 <= texture(map, b + texel).r ? 1.0 : 0.0;
   return mix(mix(s00, s10, f.x), mix(s01, s11, f.x), f.y);
+}
+
+float hash12(vec2 p) {
+  vec3 q = fract(vec3(p.xyx) * 0.1031);
+  q += dot(q, q.yzx + 33.33);
+  return fract((q.x + q.y) * q.z);
+}
+
+// Distance from a point in a cell (0..2 m each way) to the cell sides and
+// corners flagged in mask (see waterEdges in the mesher).
+float edgeDist(vec2 q, int mask) {
+  float d = 9.0;
+  if ((mask & 1) != 0) d = min(d, 2.0 - q.x);
+  if ((mask & 2) != 0) d = min(d, 2.0 - q.y);
+  if ((mask & 4) != 0) d = min(d, q.x);
+  if ((mask & 8) != 0) d = min(d, q.y);
+  if ((mask & 16) != 0) d = min(d, length(q - vec2(2.0, 2.0)));
+  if ((mask & 32) != 0) d = min(d, length(q - vec2(0.0, 2.0)));
+  if ((mask & 64) != 0) d = min(d, length(q));
+  if ((mask & 128) != 0) d = min(d, length(q - vec2(2.0, 0.0)));
+  return d;
+}
+
+// Thin bright lines of sunlight focused through the ripples.
+float caustics(vec2 p, float t) {
+  vec2 a = p * 0.8;
+  float u = a.x * 2.1 + sin(a.y * 1.7 + t * 0.7) * 1.3 + sin(a.y * 3.1 - t * 0.4) * 0.4 + t * 0.3;
+  float v = a.y * 1.9 + sin(a.x * 1.5 - t * 0.6) * 1.3 + sin(a.x * 2.9 + t * 0.5) * 0.4 - t * 0.25;
+  float lu = 1.0 - smoothstep(0.0, 0.16, abs(sin(u)));
+  float lv = 1.0 - smoothstep(0.0, 0.16, abs(sin(v)));
+  return max(lu, lv) * 0.35 + lu * lv * 0.9;
+}
+
+// Small cells of glitter that wink in and out; density in 0..1.
+float glitter(vec2 p, float scale, float density, float t, float size) {
+  vec2 g = p * scale;
+  vec2 c = floor(g);
+  float r = hash12(c);
+  vec2 jit = vec2(hash12(c + 17.3), hash12(c + 41.9));
+  float d = length(fract(g) - 0.2 - 0.6 * jit);
+  float tw = 0.35 + 0.65 * max(0.0, sin(t * (1.6 + 2.4 * r) + r * 37.0));
+  return step(r, density) * (1.0 - smoothstep(size * tw * 0.7, size * tw, d));
 }
 
 float hatchLines(vec3 p, vec3 n, float spacing, float width) {
@@ -157,6 +201,9 @@ void main() {
   if (vertical) shade *= mix(0.9, 1.05, facing * 0.5 + 0.5);
   vec3 col = mix(shade, lit, light);
 
+  // what should bloom in the post pass (foam, jets)
+  float glow = 0.0;
+
   // material details
   if (m == 2) {
     // window: glazing bars and a darker interior towards the top
@@ -176,12 +223,48 @@ void main() {
     col = mix(col, mix(uPalette[15], uPalette[14], light), dia);
     col = mix(col, vec3(0.2, 0.08, 0.07), split);
   } else if (m == 5) {
-    // water: drifting sparkle
-    float n1 = sin(vWorld.x * 3.1 + uTime * 1.4) * sin(vWorld.z * 3.7 - uTime * 1.1);
-    float n2 = sin((vWorld.x - vWorld.z) * 5.3 + uTime * 2.1) * 0.6;
-    float sparkle = smoothstep(1.05, 1.35, n1 + n2);
-    col = mix(shade, lit, 0.35 + 0.65 * sh);
-    col = mix(col, vec3(1.0), sparkle * 0.9);
+    // basin water: caustics and a few glints
+    col = mix(shade, lit, 0.3 + 0.7 * sh);
+    col += vec3(0.1, 0.12, 0.06) * caustics(vWorld.xz * 2.0, uTime) * sh;
+    col = mix(col, vec3(1.0), glitter(vWorld.xz, 5.0, 0.12, uTime, 0.16) * (0.4 + 0.6 * sh));
+  } else if (m == 19) {
+    // canal water. Broken, glowing foam where it laps against stone, flecks
+    // drifting off it, pale shallows over the submerged footings, sunlight
+    // caught in caustics, and churning white where a higher reach pours in.
+    vec2 q = mod(vLocal.xz, 2.0);
+    float dw = edgeDist(q, int(vUv.x * 255.0 + 0.5));
+    float dp = edgeDist(q, int(vUv.y * 255.0 + 0.5));
+    vec2 wp = vWorld.xz;
+    float t = uTime;
+    col = mix(shade, lit, 0.22 + 0.78 * sh);
+    col *= mix(1.0, 0.86, smoothstep(0.5, 2.2, dw));
+    float shallow = 1.0 - smoothstep(0.2, 0.95, dw + 0.08 * sin(wp.x * 2.3 + wp.y * 1.9 + t * 0.8));
+    col = mix(col, col * 1.12 + vec3(0.07, 0.09, 0.03), shallow * 0.75);
+    col += vec3(0.12, 0.14, 0.06) * caustics(wp, t) * sh * (0.55 + 0.45 * smoothstep(0.3, 1.2, dw));
+    // lapping edge: a jagged line that breathes in and out
+    float lap = sin(wp.x * 4.3 + t * 1.9) * sin(wp.y * 3.9 - t * 1.5) * 0.055 + sin((wp.x + wp.y) * 9.5 - t * 2.6) * 0.03 + sin((wp.x - wp.y) * 13.0 + t * 3.3) * 0.02;
+    float e = dw + lap;
+    // (the cell-local distance wraps at cell borders: take the footprint from
+    // the unwrapped position instead)
+    float fwE = max(length(fwidth(vLocal.xz)), 0.004);
+    float foam = 1.0 - smoothstep(0.17, 0.17 + fwE * 1.5, e);
+    // a second, broken line just off the first
+    float lap2 = sin(wp.x * 5.7 - t * 2.3) * sin(wp.y * 6.1 + t * 1.8);
+    foam = max(foam, (1.0 - smoothstep(0.035, 0.035 + fwE, abs(e - 0.3))) * step(0.25, lap2));
+    // flecks thin out away from the stone
+    float near = 1.0 - smoothstep(0.15, 1.0, dw);
+    foam = max(foam, glitter(wp + vec2(t * 0.05, -t * 0.04), 7.0, 0.9 * near, t, 0.2));
+    foam = max(foam, glitter(wp, 3.5, 0.3 * near, t * 0.7, 0.14));
+    // the churn below a weir
+    float churn = 1.0 - smoothstep(0.1, 1.5, dp + 0.3 * sin(wp.x * 3.1 - t * 2.2) * sin(wp.y * 2.7 + t * 1.7));
+    float froth = sin(wp.x * 11.0 + t * 3.1 + sin(wp.y * 7.0)) * sin(wp.y * 12.0 - t * 2.9 + sin(wp.x * 6.0)) + 0.5 * sin((wp.x + wp.y) * 9.0 - t * 4.1);
+    foam = max(foam, step(1.0 - 1.7 * churn, froth * 0.5 + 0.5) * step(0.05, churn));
+    foam = max(foam, glitter(wp + vec2(0.0, t * 0.3), 6.0, churn, t * 1.3, 0.22));
+    // glints of sun on the open water
+    float glint = glitter(wp - vec2(t * 0.03, 0.0), 4.0, 0.08 * sh, t * 1.4, 0.13);
+    col = mix(col, vec3(1.0, 1.0, 0.94), glint * 0.85);
+    col = mix(col, mix(uPalette[35], uPalette[34], 0.6 + 0.4 * sh), foam);
+    glow = foam;
   } else if (m == 8) {
     // gold: hard specular band
     vec3 V = normalize(cameraPosition - vWorld);
@@ -190,18 +273,23 @@ void main() {
     col = mix(col, vec3(1.0, 0.97, 0.82), spec * 0.85);
   } else if (m == 11) {
     col = vec3(1.0, 0.98, 0.93) * (0.94 + 0.06 * sin(uTime * 9.0 + vWorld.y * 6.0));
+    glow = 0.7;
   } else if (m == 17) {
     // foam: a broken, glittering line where water meets stone
-    float f1 = sin(vWorld.x * 7.3 + uTime * 2.3) * sin(vWorld.z * 6.1 - uTime * 1.7);
-    float f2 = sin((vWorld.x + vWorld.z) * 11.0 - uTime * 3.1);
-    if (f1 * 0.7 + f2 * 0.5 < -0.25) discard;
+    float f1 = sin(vWorld.x * 11.0 + uTime * 3.1 + sin(vWorld.z * 7.0)) * sin(vWorld.z * 12.0 - uTime * 2.9 + sin(vWorld.x * 6.0));
+    float f2 = sin((vWorld.x + vWorld.z) * 9.0 - uTime * 4.1);
+    if (f1 + 0.5 * f2 < -0.35) discard;
     col = mix(shade, lit, 0.55 + 0.45 * sh);
+    glow = 1.0;
   } else if (m == 18) {
-    // falling water: pale streaks sliding down the sheet
-    float colm = floor((vWorld.x + vWorld.z) * 5.0);
+    // falling water: pale streaks sliding down the sheet, in columns across it
+    float across = abs(N.x) > abs(N.z) ? vWorld.z : vWorld.x;
+    float colm = floor(across * 9.0);
     float rnd = fract(sin(colm * 91.7) * 43758.5453);
-    float streak = step(0.45, fract(vWorld.y * 0.8 + uTime * (1.4 + rnd) + rnd * 7.0));
-    col = mix(shade, lit, 0.35 + 0.65 * streak);
+    float streak = step(0.25 + 0.5 * rnd, fract(vWorld.y * 0.3 + uTime * (0.9 + rnd) + rnd * 7.0));
+    streak *= step(0.3, fract(across * 9.0 + rnd));
+    col = mix(mix(shade, lit, 0.35), lit, streak);
+    glow = streak * 0.3;
   } else if (m == 1) {
     // roof tiles: stripes running down the slope
     vec3 t = normalize(cross(N, vec3(0.0, 1.0, 0.0)) + 1e-4);
@@ -220,7 +308,8 @@ void main() {
   }
 
   // etched hatching, heavier in shade
-  bool flatLit = m == 11 || m == 5 || m == 17 || m == 18;
+  bool wet = m == 5 || m == 17 || m == 18 || m == 19;
+  bool flatLit = m == 11 || wet;
   if (!flatLit) {
     float amt = (1.0 - light) * 0.2 + (vertical ? 0.035 : 0.0);
     float h = hatchLines(vLocal, N, 0.1, 0.13);
@@ -232,14 +321,25 @@ void main() {
   float L = luma(col);
   vec3 tA = uDepthA * (0.55 + 0.6 * L);
   vec3 tB = uDepthB * (0.5 + 0.7 * L);
-  col = mix(col, tA, smoothstep(0.0, 0.55, df) * 0.6);
-  col = mix(col, tB, smoothstep(0.3, 1.0, df) * 0.88);
+  if (wet) {
+    // water keeps its teal far below, only deepening, so the channels still
+    // read against the warm stone
+    col *= mix(vec3(1.0), vec3(0.78, 0.84, 0.95), smoothstep(0.0, 1.0, df));
+    col = mix(col, tB * (0.5 + 0.7 * L), smoothstep(0.4, 1.0, df) * 0.16);
+  } else {
+    col = mix(col, tA, smoothstep(0.0, 0.55, df) * 0.6);
+    col = mix(col, tB, smoothstep(0.3, 1.0, df) * 0.88);
+  }
 
   // far haze
   col = mix(col, uFog, smoothstep(uFogRange.x, uFogRange.y, vViewZ));
 
-  outColor = vec4(col, 1.0);
+  // alpha carries the bloom mask to the post pass (1 = none)
+  glow *= 1.0 - smoothstep(uFogRange.x * 0.6, uFogRange.y, vViewZ);
+  outColor = vec4(col, 1.0 - clamp(glow, 0.0, 1.0));
   vec3 vn = normalize((viewMatrix * vec4(N, 0.0)).xyz);
+  // jets of water are drawn as faceted tubes: no ink creases along them
+  if (m == 11) vn = vec3(0.0, 0.0, 1.0);
   // foam reads as part of the water: no ink line between them
   float mid = m == 17 ? 5.0 : float(m);
   outNormal = vec4(vn * 0.5 + 0.5, (mid + 0.5) / 32.0);
@@ -343,6 +443,17 @@ void main() {
   float fade = 1.0 - smoothstep(90.0, 170.0, zC) * 0.7;
   vec3 ink = mix(uInk, col * 0.35, 0.12);
   col = mix(col, ink, edge * 0.92 * fade);
+
+  // soft bloom round foam and jets (their mask rides in the colour alpha)
+  float glow = 0.0;
+  for (int k = 0; k < 12; k++) {
+    float a = float(k) * 0.5236 + 0.2;
+    float rr = (k % 2 == 0 ? 2.5 : 6.0) * uLine;
+    glow += 1.0 - texture(tColor, vUv + vec2(cos(a), sin(a)) * rr * uTexel).a;
+  }
+  glow = glow / 12.0;
+  float self = 1.0 - texture(tColor, vUv).a;
+  col = mix(col, vec3(1.0, 1.0, 0.95), clamp(glow * 0.9 + self * 0.4, 0.0, 0.9));
 
   // print grain and a warm vignette
   float g = hash(floor(vUv / uTexel) + fract(uTime) * 17.0) - 0.5;

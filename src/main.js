@@ -48,6 +48,12 @@ const marker = (() => {
     glslVersion: THREE.GLSL3,
     transparent: true,
     depthWrite: false,
+    // keep the colour target's alpha: the post pass reads it as the bloom mask
+    blending: THREE.CustomBlending,
+    blendSrc: THREE.SrcAlphaFactor,
+    blendDst: THREE.OneMinusSrcAlphaFactor,
+    blendSrcAlpha: THREE.ZeroFactor,
+    blendDstAlpha: THREE.OneFactor,
     uniforms: { uAlpha: { value: 0 } },
     vertexShader: 'void main(){ gl_Position = projectionMatrix * modelViewMatrix * vec4(position, 1.0); }',
     fragmentShader:

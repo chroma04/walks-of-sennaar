@@ -180,7 +180,9 @@ function clearLine(world, a, b, radius) {
     pz = z;
     py = y;
   }
-  return true;
+  // and arrive on b's layer: a line over a bridge deck must not stand in for
+  // the way down to the ground beneath it
+  return Math.abs(py - b.y) < 0.6;
 }
 
 function smooth(world, pts, radius) {
