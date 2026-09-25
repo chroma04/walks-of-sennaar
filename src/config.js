@@ -40,8 +40,9 @@ export const M = {
   FOAM: 17, // broken white glitter along water edges
   FALL: 18, // falling water sheets over weirs
   CANAL: 19, // canal and pool water laid on the cell grid: foam and shallows drawn in the shader
+  FLAME: 20, // lamp and brazier flames: flicker and a soft bloom
 };
-export const MATERIAL_COUNT = 20;
+export const MATERIAL_COUNT = 21;
 
 const hex = (h) => [((h >> 16) & 255) / 255, ((h >> 8) & 255) / 255, (h & 255) / 255];
 
@@ -68,6 +69,7 @@ export const PALETTE = [
   [hex(0xffffff), hex(0xeafff8)], // FOAM
   [hex(0xeafff7), hex(0x8fe3cf)], // FALL
   [hex(0x63dcb0), hex(0x2a9d93)], // CANAL
+  [hex(0xffc94a), hex(0xe8561c)], // FLAME
 ];
 export const WALL_LIT = hex(0xf7c850);
 export const WALL_SHADE = hex(0xe58a3a);

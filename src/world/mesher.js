@@ -3,9 +3,9 @@
 
 import { BLOCK, CELL, LEVEL_H, STEPS_PER_CELL, K_FLOOR, K_STAIR, K_BUILDING, K_LANDING, K_WATER, DX, DZ, M } from '../config.js';
 import { GeoBuilder, T, circle, rect, pointedArch, pointedArchHeight } from './geometry.js';
-import { hash3 } from './rng.js';
+import { hash3, makeRng } from './rng.js';
 import { stairRamp, WATER_DROP, DECK_T } from './layout.js';
-import { dirAngle } from './decorate.js';
+import { dirAngle } from './site.js';
 import { COLUMN_H } from './templates.js';
 
 const N = BLOCK;
@@ -142,7 +142,7 @@ export function meshBlock(S, D, look, tp) {
     const face = (r.d + 2) % 4;
     b.withTransform(T.chain(T.translate(ex, 0, ez), T.rotY(dirAngle(face))), () => {
       if (r.door) {
-        b.appendTemplate(tp.door, T.translate(0, r.y, 0));
+        b.appendTemplate(r.portal ? pickVar(tp.portal, r.i + r.j) : tp.door, T.translate(0, r.y, 0));
         return;
       }
       if (r.low) return;
@@ -667,6 +667,43 @@ function feature(b, f, tp) {
     case 'islet':
       b.withTransform(T.translate(f.x, f.y, f.z), () => islet(b, f, tp));
       break;
+    case 'lamp':
+      b.appendTemplate(tp.lamp, at(f.x, f.y, f.z, f.rot || 0));
+      break;
+    case 'brazier':
+      b.appendTemplate(tp.brazier, at(f.x, f.y, f.z, f.rot || 0));
+      break;
+    case 'banner':
+      b.appendTemplate(pickVar(tp.banner, f.seed), at(f.x, f.y, f.z, f.rot));
+      break;
+    case 'cypress':
+      b.appendTemplate(pickVar(tp.cypress, f.seed), at(f.x, f.y, f.z, f.seed % 6));
+      break;
+    case 'pitpalm':
+      b.withTransform(T.translate(f.x, f.y, f.z), () => trough(b, 1.1, 1.1, 0.28, 0.13, M.GRASS));
+      b.appendTemplate(pickVar(tp.palm, f.seed), at(f.x, f.y + 0.16, f.z, f.seed % 6, f.s));
+      break;
+    case 'armillary':
+      b.appendTemplate(tp.armillary, at(f.x, f.y, f.z, f.rot));
+      break;
+    case 'stele':
+      b.appendTemplate(pickVar(tp.stele, f.seed), at(f.x, f.y, f.z, f.rot));
+      break;
+    case 'chhatri':
+      b.appendTemplate(tp.chhatri, at(f.x, f.y, f.z, f.rot || 0));
+      break;
+    case 'windcatcher':
+      b.appendTemplate(tp.windcatcher[f.tall ? 1 : 0], at(f.x, f.y, f.z, f.rot));
+      break;
+    case 'sconce':
+      b.appendTemplate(tp.sconce, at(f.x, f.y, f.z, f.rot));
+      break;
+    case 'pergola':
+      b.withTransform(at(f.x, f.y, f.z, f.rot), () => pergola(b, f, tp));
+      break;
+    case 'runner':
+      b.withTransform(at(f.x, f.y, f.z, f.rot), () => runner(b, f));
+      break;
     default:
   }
 }
@@ -700,6 +737,69 @@ function cloister(b, f, tp, at) {
     }
   }
   for (const [x, z] of [[f.x0, f.z0], [f.x1, f.z0], [f.x1, f.z1], [f.x0, f.z1]]) b.appendTemplate(tp.cornerPier, T.translate(x, f.y, z));
+}
+
+// A pergola along a wall: columns out on the terrace, a lintel, timber joists
+// back to the wall and a vine over the top. Origin on the wall face at the
+// middle of the run, +Z out of the wall, X along it.
+function pergola(b, f, tp) {
+  const L = f.len;
+  const D = 1.55;
+  const n = Math.round(L / CELL);
+  const y1 = COLUMN_H;
+  for (let k = 0; k <= n; k++) {
+    const x = Math.max(-L / 2 + 0.35, Math.min(L / 2 - 0.35, -L / 2 + k * CELL));
+    b.appendTemplate(tp.column, T.translate(x, 0, D));
+  }
+  b.m = M.STONE;
+  b.box(-L / 2 + 0.05, y1, D - 0.24, L / 2 - 0.05, y1 + 0.24, D + 0.24, 0b111111);
+  b.box(-L / 2 + 0.05, y1 + 0.02, 0, L / 2 - 0.05, y1 + 0.2, 0.16, 0b111101);
+  b.m = M.DARK;
+  const joists = Math.round((L - 0.3) / 0.7);
+  for (let k = 0; k <= joists; k++) {
+    const x = -L / 2 + 0.15 + (k * (L - 0.3)) / joists;
+    b.box(x - 0.05, y1 + 0.24, 0.02, x + 0.05, y1 + 0.36, D + 0.5, 0b111111);
+  }
+  // the vine: two ragged rows of leafy patches over the joists, gaps here and
+  // there, and tendrils hanging from the front
+  const rng = makeRng(f.seed);
+  b.m = M.FOLIAGE;
+  b.sway = 40;
+  const y = y1 + 0.4;
+  for (const zc of [0.55, D - 0.05]) {
+    for (let x = -L / 2 + 0.4 + rng() * 0.3; x < L / 2 - 0.3; x += 0.7 + rng() * 0.35) {
+      if (rng() < 0.12) continue;
+      const verts = [[x, y + 0.1, zc]];
+      const m = 10;
+      for (let q = 0; q < m; q++) {
+        const a = (q / m) * Math.PI * 2;
+        const rr = 0.45 + rng() * 0.3;
+        verts.push([x + Math.cos(a) * rr * 1.15, y + (rng() - 0.5) * 0.16, Math.max(0.05, Math.min(D + 0.6, zc + Math.sin(a) * rr))]);
+      }
+      const tris = [];
+      for (let q = 0; q < m; q++) tris.push([0, 1 + q, 1 + ((q + 1) % m)]);
+      b.leaf(verts, tris);
+      if (zc > 1 && rng() < 0.55) {
+        const tx = x + (rng() - 0.5) * 0.5;
+        const len = 0.45 + rng() * 0.7;
+        b.leaf([[tx - 0.13, y, D + 0.3], [tx + 0.13, y, D + 0.3], [tx + 0.02, y - len, D + 0.4]], [[0, 1, 2]]);
+      }
+    }
+  }
+  b.sway = 0;
+}
+
+// A paved runner laid on the terrace: a band of cream slabs with a crimson
+// lozenge on every cell. Origin at its start, +Z along it.
+function runner(b, f) {
+  const hw = 0.62;
+  const y = 0.012;
+  b.m = M.CREAM;
+  b.quad([-hw, y, f.len], [hw, y, f.len], [hw, y, 0], [-hw, y, 0]);
+  b.m = M.STRIPE;
+  for (let z = CELL / 2; z < f.len - 0.4; z += CELL) {
+    b.quad([0, y + 0.004, z + 0.34], [0.22, y + 0.004, z], [0, y + 0.004, z - 0.34], [-0.22, y + 0.004, z]);
+  }
 }
 
 function turret(b, f) {

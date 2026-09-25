@@ -1,11 +1,14 @@
 // Second generation phase: furnish terraces (cloisters, fountains, planters,
-// arcades, statues, shrines...), place where the devotees start out, and record
-// collision shapes. Needs read access to neighbouring blocks' structure through
+// arcades, statues, shrines, pergolas, lamps...), dress roofs, place where the
+// devotees start out, and record collision shapes. How a plaza is laid out
+// along its axis lives in compose.js. Needs read access to neighbouring blocks' structure through
 // look(i, j) for block-local cells that may lie outside the block.
 
-import { BLOCK, CELL, LEVEL_H, K_FLOOR, K_STAIR, K_BUILDING, K_LANDING, K_WATER, DX, DZ, M } from '../config.js';
+import { BLOCK, CELL, LEVEL_H, K_FLOOR, K_STAIR, K_BUILDING, K_WATER, DX, DZ, M } from '../config.js';
 import { hash2, makeRng } from './rng.js';
+import { hasDeck, sideCells, sideInfo, runs, regionUsed, roomFor, mark, inside, blockEdge, edgeCentre, dirAngle, orientedBox, localBox } from './site.js';
 import { WATER_DROP } from './layout.js';
+import { propSpec, putProp, entrances, chooseAxis, flank, runner, allee, satellites, facingBenches, mirroredScatter, extents, cellAt, besideProp, claim, median } from './compose.js';
 
 const N = BLOCK;
 
@@ -22,8 +25,9 @@ export function decorate(S, look) {
   };
   const used = S.used.slice();
   // quiet: cells whose ground-floor wall stays plain (a relief, a fountain or a
-  // rill's spout stands there instead of a window)
-  const ctx = { S, look, rng, out, used, abut: new Set(), quiet: new Set() };
+  // rill's spout stands there instead of a window); props: cells taken by the
+  // composed pairs and rows, which wall furniture keeps a cell away from
+  const ctx = { S, look, rng, out, used, abut: new Set(), quiet: new Set(), props: new Set() };
   for (const b of S.bridges) ctx.abut.add(b.a).add(b.b);
 
   // lock gates first: their winches claim quay cells before anything else
@@ -39,138 +43,37 @@ export function decorate(S, look) {
   return out;
 }
 
-const hasDeck = (ctx, i, j) => {
-  const v = ctx.S.deck[j * N + i];
-  return v === v;
-};
-
 // ---------------------------------------------------------------------------
 
-function sideCells(P, d) {
-  const cells = [];
-  if (d === 0) for (let j = P.z0; j < P.z1; j++) cells.push([P.x1 - 1, j]);
-  else if (d === 2) for (let j = P.z0; j < P.z1; j++) cells.push([P.x0, j]);
-  else if (d === 1) for (let i = P.x0; i < P.x1; i++) cells.push([i, P.z1 - 1]);
-  else for (let i = P.x0; i < P.x1; i++) cells.push([i, P.z0]);
-  return cells;
-}
-
-function sideInfo(ctx, P, d) {
-  const y = P.level * LEVEL_H;
-  return sideCells(P, d).map(([i, j], t) => {
-    const ni = i + DX[d];
-    const nj = j + DZ[d];
-    const n = ctx.look(ni, nj);
-    let rel;
-    if (n.deck === n.deck && Math.abs(n.deck - y) < 0.01) rel = 'stair';
-    else if (n.kind === K_WATER) rel = 'water';
-    else if (n.kind === K_STAIR || n.kind === K_LANDING) rel = 'stair';
-    else if (n.kind === K_BUILDING || n.base > y + 1.5) rel = 'up';
-    else if (n.base < y - 1.5) rel = 'down';
-    else rel = 'same';
-    const u = ctx.used[j * N + i];
-    return { i, j, t, rel, u, wall: n.base - y, owner: n };
-  });
-}
-
-function runs(arr, pred) {
-  const res = [];
-  let cur = null;
-  for (const e of arr) {
-    if (pred(e)) {
-      if (!cur) res.push((cur = []));
-      cur.push(e);
-    } else cur = null;
-  }
-  return res;
-}
-
-function regionUsed(ctx, x0, z0, x1, z1, allow2 = false) {
-  for (let j = z0; j < z1; j++) {
-    for (let i = x0; i < x1; i++) {
-      if (i < 0 || j < 0 || i >= N || j >= N) return true;
-      const u = ctx.used[j * N + i];
-      if (u === 1 || u === 3 || (!allow2 && u === 2)) return true;
-    }
-  }
-  return false;
-}
-
-// Whether props may take these cells of plot P: the rest of its open floor must
-// stay in one piece, and every cell a prop stands in must still touch it (a
-// prop fills only part of its cell, and the rest has to stay reachable).
-function roomFor(ctx, P, cells) {
-  const { S } = ctx;
-  const take = new Set(cells.map(([i, j]) => j * N + i));
-  const floor = (c) => S.kind[c] === K_FLOOR || S.kind[c] === K_LANDING;
-  const free = (i, j) => {
-    if (!inside(P, i, j)) return false;
-    const c = j * N + i;
-    return floor(c) && ctx.used[c] !== 3 && !take.has(c);
-  };
-  let total = 0;
-  let start = -1;
-  const props = [];
-  for (let j = P.z0; j < P.z1; j++) {
-    for (let i = P.x0; i < P.x1; i++) {
-      const c = j * N + i;
-      if (free(i, j)) {
-        total++;
-        if (start < 0) start = c;
-      } else if (floor(c) && (ctx.used[c] === 3 || take.has(c))) props.push([i, j]);
-    }
-  }
-  if (!total) return false;
-  const seen = new Set([start]);
-  const stack = [start];
-  while (stack.length) {
-    const c = stack.pop();
-    const i = c % N;
-    const j = (c - i) / N;
-    for (let d = 0; d < 4; d++) {
-      const a = i + DX[d];
-      const b = j + DZ[d];
-      if (!free(a, b) || seen.has(b * N + a)) continue;
-      seen.add(b * N + a);
-      stack.push(b * N + a);
-    }
-  }
-  if (seen.size !== total) return false;
-  return props.every(([i, j]) => [0, 1, 2, 3].some((d) => free(i + DX[d], j + DZ[d])));
-}
-
-function mark(ctx, x0, z0, x1, z1, v = 3) {
-  for (let j = z0; j < z1; j++) for (let i = x0; i < x1; i++) ctx.used[j * N + i] = v;
-}
-
-function inside(P, i, j) {
-  return i >= P.x0 && i < P.x1 && j >= P.z0 && j < P.z1;
-}
-
-function blockEdge(ctx, i, j, d) {
-  if (i >= 0 && j >= 0 && i < N && j < N) ctx.out.eblock[j * N + i] |= 1 << d;
-  const ni = i + DX[d];
-  const nj = j + DZ[d];
-  if (ni >= 0 && nj >= 0 && ni < N && nj < N) ctx.out.eblock[nj * N + ni] |= 1 << ((d + 2) % 4);
-}
-
-// ---------------------------------------------------------------------------
-
+// A terrace: its programme (plaza, cloister, court, tier, quay...), then the
+// composition laid out from its ways in (see compose.js), then its walls,
+// balustrades and corners.
 function decorateTerrace(ctx, P) {
   const { rng, out } = ctx;
   const y = P.level * LEVEL_H;
   let sides = [0, 1, 2, 3].map((d) => sideInfo(ctx, P, d));
   const area = P.w * P.d;
 
-  // Hidden gardens: terraces nobody can reach become lawns with trees.
+  // Hidden gardens: terraces nobody can reach become lawns, planted as an
+  // orchard in rows about the middle.
   if (!P.reachable && P.w >= 4 && P.d >= 4) {
     for (let j = P.z0 + 1; j < P.z1 - 1; j++) for (let i = P.x0 + 1; i < P.x1 - 1; i++) out.floorMat[j * N + i] = M.GRASS;
-    const trees = 1 + Math.floor(rng() * 3);
-    for (let k = 0; k < trees; k++) {
-      const i = P.x0 + 1 + Math.floor(rng() * (P.w - 2));
-      const j = P.z0 + 1 + Math.floor(rng() * (P.d - 2));
-      if (ctx.used[j * N + i] !== 0) continue;
-      out.feats.push({ t: 'palm', x: (i + 0.5) * CELL, z: (j + 0.5) * CELL, y, pot: false, s: 0.9 + rng() * 0.5, seed: rng() * 1e6 });
+    const step = P.w >= 8 && P.d >= 8 ? 3 : 2;
+    const tree = rng() < 0.7 ? 'palm' : 'cypress';
+    const at = (lo, hi) => {
+      const res = [];
+      const mid = (lo + hi - 1) / 2;
+      for (let o = Number.isInteger(mid) ? 0 : 0.5; mid - o >= lo + 1; o += step) res.push(...(o === 0 ? [mid] : [mid - o, mid + o]));
+      return res.filter((v) => v <= hi - 2);
+    };
+    for (const j of at(P.z0, P.z1)) {
+      for (const i of at(P.x0, P.x1)) {
+        if (ctx.used[j * N + i] !== 0) continue;
+        const x = (i + 0.5) * CELL;
+        const z = (j + 0.5) * CELL;
+        if (tree === 'palm') out.feats.push({ t: 'palm', x, z, y, pot: false, s: 0.95 + rng() * 0.4, seed: rng() * 1e6 });
+        else out.feats.push({ t: 'cypress', x, z, y, seed: rng() * 1e6 });
+      }
     }
   }
 
@@ -183,13 +86,49 @@ function decorateTerrace(ctx, P) {
   // set pieces furnish themselves; the generic scatter below stays off them
   const open = program === 'plaza';
   if (open && P.reachable && area >= 24 && rng() < 0.1 + 0.3 * ctx.S.district.wet && rill(ctx, P, y, sides)) sides = [0, 1, 2, 3].map((d) => sideInfo(ctx, P, d));
+  // the ways in, and the axis a plaza is laid out on
+  const ents = P.reachable && program !== 'cloister' ? entrances(ctx, P) : [];
+  const axis = open ? chooseAxis(ctx, P, ents) : null;
+  let piece = null;
   if (program === 'summit' && P.reachable) shrine(ctx, P, y, F.shrine);
   else if (program === 'court' && P.reachable) court(ctx, P, y, F.garden);
   else if (program === 'parterre' && P.reachable) court(ctx, P, y, rng() < 0.55);
-  else if (program === 'quay') quay(ctx, P, y);
-  else if (open && P.reachable) centrePiece(ctx, P, y);
+  else if (program === 'quay' || program === 'bank') quay(ctx, P, y, program);
+  else if (open && P.reachable) piece = centrePiece(ctx, P, y, null, null, axis);
 
-  // Walls rising from this terrace: planters, benches, doors, ground-floor windows.
+  // a paved way up to the centrepiece, from the entrance its axis comes in by
+  // (and from one straight across, if there is one)
+  if (piece && axis && rng() < 0.5 && runner(ctx, P, y, axis.e, piece)) {
+    for (const e of ents) if (e !== axis.e && e.h === (axis.h + 2) % 4 && e.c === axis.c) runner(ctx, P, y, e, piece);
+  }
+  // matching pairs either side of the ways in
+  const frame = frameStyle(ctx, program);
+  if (frame) {
+    const spec = propSpec(ctx, frame);
+    for (const e of ents) {
+      if (e.arch || (e.kind === 'foot' && e.w < 2 && program !== 'tier')) continue;
+      flank(ctx, P, e, spec, y);
+    }
+  }
+  // rows along the axis, or pieces set round the centrepiece
+  let lined = false;
+  if (open && axis && rng() < 0.5) {
+    const r = rng();
+    const kinds = r < 0.32 ? ['cypress'] : r < 0.58 ? ['pitpalm'] : r < 0.74 ? ['lamp'] : r < 0.88 ? ['pitpalm', 'lamp'] : ['cypress', 'stele'];
+    lined = allee(ctx, P, y, axis, kinds.map((k) => propSpec(ctx, k)));
+  }
+  if (open && P.reachable && !piece && !lined) lined = median(ctx, P, y, propSpec(ctx, rng.pick(['lamp', 'cypress', 'pitpalm', 'lamp', 'urns'])));
+  if (piece && !lined) {
+    const r = rng();
+    if (r < 0.4) satellites(ctx, P, y, piece, propSpec(ctx, rng.pick(['lamp', 'lamp', 'brazier', 'cypress', 'urn', 'palm'])));
+    else if (r < 0.7 && axis) facingBenches(ctx, P, y, axis, piece);
+  }
+  sides = [0, 1, 2, 3].map((d) => sideInfo(ctx, P, d));
+
+  // Walls rising from this terrace: doors (some in a portal, some between
+  // lanterns), pergolas, planters, ground-floor windows.
+  const furnished = P.reachable && program !== 'summit' && program !== 'cloister';
+  const u = (e) => ctx.used[e.j * N + e.i];
   for (let d = 0; d < 4; d++) {
     const s = sides[d];
     const out_ = (d + 2) % 4; // direction facing back into the plot
@@ -199,17 +138,44 @@ function decorateTerrace(ctx, P) {
         const cand = run.filter((e) => e.u !== 1 && e.u !== 3);
         if (cand.length) doorAt = cand[Math.floor(rng() * cand.length)].t;
       }
+      const hush = new Set();
+      let portal = false;
+      const pergola = furnished && (open || program === 'quay') && run.length >= 3 && rng() < 0.16 && placePergola(ctx, P, run, d, y, doorAt);
+      const di = run.findIndex((e) => e.t === doorAt);
+      if (furnished && !pergola && di > 0 && di < run.length - 1) {
+        const nb = [run[di - 1], run[di + 1]];
+        const r = rng();
+        if (r < 0.62 && nb.every((e) => e.u !== 1)) {
+          // lanterns either side of the door, on plain walls; a portal frames some
+          portal = r < 0.3;
+          const [cx, cz] = edgeCentre(run[di].i, run[di].j, d);
+          const ax = Math.abs(DZ[d]);
+          const az = Math.abs(DX[d]);
+          const off = portal ? 1.62 : 1.1;
+          for (const sg of [-1, 1]) out.feats.push({ t: 'sconce', x: cx + ax * sg * off, z: cz + az * sg * off, y, rot: dirAngle(out_) });
+          for (const e of nb) hush.add(e.t);
+          // and now and then a bench under each
+          const cells = nb.map((e) => [e.i, e.j]);
+          if (rng() < 0.35 && nb.every((e) => u(e) === 0 && !besideProp(ctx, e.i, e.j, ctx.props)) && roomFor(ctx, P, cells)) {
+            for (const e of nb) {
+              const [bx, bz] = edgeCentre(e.i, e.j, d);
+              putProp(ctx, { kind: 'bench' }, bx - DX[d] * 0.45, bz - DZ[d] * 0.45, y, out_);
+              ctx.used[e.j * N + e.i] = 3;
+            }
+          }
+        }
+      }
       const planter = new Set();
-      const piece = wallPieces(ctx, P, run, d, y, doorAt, program);
-      if (program !== 'cloister' && program !== 'summit' && P.reachable) {
+      const piece = pergola ? new Set() : wallPieces(ctx, P, run, d, y, doorAt, program);
+      if (furnished && !pergola) {
         // (usage read afresh: a centrepiece may have claimed cells since)
-        const u = (e) => ctx.used[e.j * N + e.i];
         for (let k = 0; k < run.length; k++) {
           const e = run[k];
-          if (e.t === doorAt || u(e) !== 0 || piece.has(e.t) || rng() > (program === 'tier' ? 0.3 : 0.22)) continue;
+          const fits = (q) => u(q) === 0 && q.t !== doorAt && !piece.has(q.t) && !hush.has(q.t) && !besideProp(ctx, q.i, q.j, ctx.props);
+          if (!fits(e) || rng() > (program === 'tier' ? 0.3 : 0.22)) continue;
           let len = 0;
           const want = 2 + Math.floor(rng() * 2);
-          while (k + len < run.length && len < want && u(run[k + len]) === 0 && run[k + len].t !== doorAt && !piece.has(run[k + len].t)) len++;
+          while (k + len < run.length && len < want && fits(run[k + len])) len++;
           if (len < 1) continue;
           const seg = run.slice(k, k + len);
           if (!roomFor(ctx, P, seg.map((q) => [q.i, q.j]))) continue;
@@ -221,17 +187,8 @@ function decorateTerrace(ctx, P) {
       for (const e of run) {
         if (e.u === 1) continue;
         const isDoor = e.t === doorAt;
-        const quiet = planter.has(e.t) || piece.has(e.t) || ctx.quiet.has(e.j * N + e.i);
-        out.band0.push({ i: e.i, j: e.j, d, y, door: isDoor, low: quiet, owner: [e.owner.bx, e.owner.bz, e.owner.plot] });
-        // (not in the one-cell walk round a cloister, which a bench would close)
-        if (!isDoor && !quiet && ctx.used[e.j * N + e.i] === 0 && P.reachable && program !== 'summit' && program !== 'cloister' && rng() < (program === 'quay' ? 0.12 : 0.06) && roomFor(ctx, P, [[e.i, e.j]])) {
-          // bench against the wall
-          const [cx, cz] = edgeCentre(e.i, e.j, d);
-          const inset = 0.45;
-          out.feats.push({ t: 'bench', x: cx - DX[d] * inset, z: cz - DZ[d] * inset, y, rot: dirAngle(out_) });
-          out.boxes.push(orientedBox(cx - DX[d] * inset, cz - DZ[d] * inset, d, 1.5, 0.5, y));
-          ctx.used[e.j * N + e.i] = 3;
-        }
+        const quiet = planter.has(e.t) || piece.has(e.t) || hush.has(e.t) || ctx.quiet.has(e.j * N + e.i);
+        out.band0.push({ i: e.i, j: e.j, d, y, door: isDoor, portal: isDoor && portal, low: quiet, owner: [e.owner.bx, e.owner.bz, e.owner.plot] });
       }
     }
   }
@@ -313,72 +270,52 @@ function decorateTerrace(ctx, P) {
     }
   }
 
-  // Corners
+  // Corners: one treatment for the whole plot. Outer corners over drops get a
+  // pinnacle pier or a little domed kiosk to look out from; inner corners
+  // between walls get matching urns, palms or cypresses.
   const corners = [
     [P.x0, P.z0, 2, 3],
     [P.x1 - 1, P.z0, 0, 3],
     [P.x1 - 1, P.z1 - 1, 0, 1],
     [P.x0, P.z1 - 1, 2, 1],
   ];
+  const rOut = rng();
+  const outer = program === 'tier' ? 'pinnacle' : rOut < 0.3 ? 'pinnacle' : rOut < 0.5 && (open || program === 'court' || program === 'quay') ? 'chhatri' : null;
+  const rIn = rng();
+  const innerSpec = program === 'summit' ? null : propSpec(ctx, rIn < 0.25 ? 'urns' : rIn < 0.45 ? 'palm' : rIn < 0.57 ? 'cypress' : rIn < 0.65 ? 'urn' : 'none');
   for (const [i, j, da, db] of corners) {
     const ra = sides[da].find((e) => e.i === i && e.j === j)?.rel;
     const rb = sides[db].find((e) => e.i === i && e.j === j)?.rel;
-    const cx = (i + 0.5) * CELL + DX[da] * 0.35 + DX[db] * 0.35;
-    const cz = (j + 0.5) * CELL + DZ[da] * 0.35 + DZ[db] * 0.35;
-    if (ra === 'down' && rb === 'down' && !ctx.abut.has(j * N + i) && !hasDeck(ctx, i, j) && (program === 'tier' || rng() < 0.45)) {
+    const c = j * N + i;
+    if (ra === 'down' && rb === 'down' && outer && !ctx.abut.has(c) && !hasDeck(ctx, i, j)) {
+      if (outer === 'chhatri' && P.reachable && ctx.used[c] === 0 && roomFor(ctx, P, [[i, j]])) {
+        // kept in from the balustrade on both drops
+        const kx = (i + 0.5) * CELL - (DX[da] + DX[db]) * 0.08;
+        const kz = (j + 0.5) * CELL - (DZ[da] + DZ[db]) * 0.08;
+        out.feats.push({ t: 'chhatri', x: kx, z: kz, y });
+        for (const sx of [-1, 1]) for (const sz of [-1, 1]) out.circles.push([kx + sx * 0.62, kz + sz * 0.62, 0.16, y]);
+        ctx.used[c] = 3;
+        continue;
+      }
       // pinnacle pier on the outer corner of the balustrade
       const px = (i + 0.5 + DX[da] * 0.5 + DX[db] * 0.5) * CELL - (DX[da] + DX[db]) * 0.16;
       const pz = (j + 0.5 + DZ[da] * 0.5 + DZ[db] * 0.5) * CELL - (DZ[da] + DZ[db]) * 0.16;
-      out.feats.push({ t: 'pinnacle', x: px, z: pz, y, h: 2.6 + rng() * 1.6 });
+      out.feats.push({ t: 'pinnacle', x: px, z: pz, y, h: 2.6 + (P.id % 3) * 0.6 });
       out.boxes.push([px - 0.4, pz - 0.4, px + 0.4, pz + 0.4, y]);
       continue;
     }
-    if (!P.reachable || ctx.used[j * N + i] !== 0 || !roomFor(ctx, P, [[i, j]])) continue;
-    if (ra === 'up' && rb === 'up' && rng() < 0.5) {
-      if (rng() < 0.5) {
-        out.feats.push({ t: 'urns', x: cx, z: cz, y, n: 1 + Math.floor(rng() * 3), seed: rng() * 1e6 });
-        out.circles.push([cx, cz, 0.7, y]);
-      } else {
-        out.feats.push({ t: 'palm', x: cx, z: cz, y, pot: true, s: 0.8 + rng() * 0.4, seed: rng() * 1e6 });
-        out.circles.push([cx, cz, 0.5, y]);
-      }
-      ctx.used[j * N + i] = 3;
-    } else if (rng() < 0.12) {
-      out.feats.push({ t: 'urns', x: cx, z: cz, y, n: 1, seed: rng() * 1e6 });
-      out.circles.push([cx, cz, 0.4, y]);
-      ctx.used[j * N + i] = 3;
-    }
+    if (ra !== 'up' || rb !== 'up' || !innerSpec || innerSpec.kind === 'none') continue;
+    if (!P.reachable || ctx.used[c] !== 0 || !roomFor(ctx, P, [[i, j]])) continue;
+    const pull = innerSpec.kind === 'cypress' ? 0.3 : 0.35;
+    const cx = (i + 0.5) * CELL + (DX[da] + DX[db]) * pull;
+    const cz = (j + 0.5) * CELL + (DZ[da] + DZ[db]) * pull;
+    putProp(ctx, innerSpec, cx, cz, y, (da + 2) % 4);
+    ctx.used[c] = 3;
   }
 
-  // Big plazas get a scatter of potted palms, urns and benches.
-  if (open && P.reachable && area >= 42) {
-    const want = Math.floor(area / 36) + (rng() < 0.5 ? 1 : 0);
-    let placed = 0;
-    for (let tries = 0; tries < want * 6 && placed < want; tries++) {
-      const i = P.x0 + 1 + Math.floor(rng() * (P.w - 2));
-      const j = P.z0 + 1 + Math.floor(rng() * (P.d - 2));
-      if (ctx.used[j * N + i] !== 0 || regionUsed(ctx, i - 1, j - 1, i + 2, j + 2, true) || !roomFor(ctx, P, [[i, j]])) continue;
-      const x = (i + 0.5) * CELL;
-      const z = (j + 0.5) * CELL;
-      const r = rng();
-      if (r < 0.45) {
-        out.feats.push({ t: 'palm', x, z, y, pot: true, s: 0.8 + rng() * 0.4, seed: rng() * 1e6 });
-        out.circles.push([x, z, 0.5, y]);
-      } else if (r < 0.7) {
-        out.feats.push({ t: 'potplant', x, z, y, k: rng() < 0.6 ? 'agave' : 'broadleaf', seed: rng() * 1e6 });
-        out.circles.push([x, z, 0.5, y]);
-      } else if (r < 0.88) {
-        out.feats.push({ t: 'urns', x, z, y, n: 1 + Math.floor(rng() * 3), seed: rng() * 1e6 });
-        out.circles.push([x + 0.1, z + 0.2, 0.75, y]);
-      } else {
-        const d = Math.floor(rng() * 4);
-        out.feats.push({ t: 'bench', x, z, y, rot: dirAngle(d) });
-        out.boxes.push(orientedBox(x, z, d, 1.5, 0.5, y));
-      }
-      ctx.used[j * N + i] = 3;
-      placed++;
-    }
-  }
+  // Big plazas that nothing lines get pairs of palms, urns, benches and lamps
+  // mirrored across the axis.
+  if (open && P.reachable && area >= 42 && !lined) mirroredScatter(ctx, P, y, axis, Math.floor(area / 72) + (rng() < 0.5 ? 1 : 0));
 
   // Devotees: where they start their day. Most wander, some stand or kneel.
   if (P.reachable && area >= 20 && program !== 'summit' && rng() < (program === 'court' ? 0.8 : 0.22)) {
@@ -406,10 +343,6 @@ function freeSpot(ctx, P, tries) {
   return null;
 }
 
-function edgeCentre(i, j, d) {
-  return [(i + 0.5 + DX[d] * 0.5) * CELL, (j + 0.5 + DZ[d] * 0.5) * CELL];
-}
-
 // End point of an arcade line that runs 1 cell in from side d.
 function arcadeEnd(i, j, d, sign) {
   // line lies on the inner edge of the side row: between cell (i,j) and (i-DX,j-DZ)
@@ -419,18 +352,6 @@ function arcadeEnd(i, j, d, sign) {
   const ax = DZ[d] !== 0 ? 1 : 0;
   const az = DX[d] !== 0 ? 1 : 0;
   return [lx + ax * sign * CELL * 0.5, lz + az * sign * CELL * 0.5];
-}
-
-export function dirAngle(d) {
-  return Math.atan2(DX[d], DZ[d]);
-}
-
-// Box of length `len` along the wall and depth `dep` out from it, centred at (x,z).
-function orientedBox(x, z, d, len, dep, y) {
-  const alongX = DZ[d] !== 0;
-  const hx = alongX ? len / 2 : dep / 2;
-  const hz = alongX ? dep / 2 : len / 2;
-  return [x - hx, z - hz, x + hx, z + hz, y];
 }
 
 function placePlanter(ctx, seg, d, y) {
@@ -535,42 +456,83 @@ function cloister(ctx, P, y) {
   out.feats.push({ t: 'cloister', x0: X0, z0: Z0, x1: X1, z1: Z1, y, ent, seed: rng() * 1e6 });
 }
 
-function centrePiece(ctx, P, y, forced = null, at = null) {
+// Cells each centrepiece takes, when centred on a cell boundary (even) or on
+// a cell's middle (odd); 0 where it cannot be.
+const PIECE_SIZE = {
+  statue: [2, 3],
+  obelisk: [2, 1],
+  armillary: [2, 1],
+  pool: [0, 3],
+  basin: [0, 3],
+  garch: [4, 3],
+  fountain: [2, 3],
+  palmbed: [2, 3],
+  sarchfree: [0, 1],
+};
+
+// The piece in the middle of a plaza. On an axis it stands on the axis line,
+// halfway across the plot, and turns to face the way in. Returns the cells it
+// took, or false.
+function centrePiece(ctx, P, y, forced = null, at = null, axis = null) {
   const { rng, out } = ctx;
   const r = rng();
   let type = forced;
   if (type) {
     // chosen by the caller
-  } else if (P.w >= 7 && P.d >= 7 && r < 0.12) type = 'statue';
-  else if (P.w >= 7 && P.d >= 7 && r < 0.22) type = 'pool';
-  else if (P.w >= 8 && P.d >= 8 && r < 0.3) type = 'basin';
-  else if (P.w >= 7 && P.d >= 7 && r < 0.38) type = 'garch';
-  else if (P.w >= 6 && P.d >= 6 && r < 0.45) type = 'obelisk';
-  else if (P.w >= 5 && P.d >= 5 && r < 0.64) type = 'fountain';
-  else if (P.w >= 5 && P.d >= 5 && r < 0.76) type = 'palmbed';
+  } else if (P.w >= 7 && P.d >= 7 && r < 0.1) type = 'statue';
+  else if (P.w >= 7 && P.d >= 7 && r < 0.19) type = 'pool';
+  else if (P.w >= 8 && P.d >= 8 && r < 0.27) type = 'basin';
+  else if (P.w >= 7 && P.d >= 7 && r < 0.35) type = 'garch';
+  else if (P.w >= 6 && P.d >= 6 && r < 0.43) type = 'obelisk';
+  else if (P.w >= 6 && P.d >= 6 && r < 0.5) type = 'armillary';
+  else if (P.w >= 5 && P.d >= 5 && r < 0.66) type = 'fountain';
+  else if (P.w >= 5 && P.d >= 5 && r < 0.77) type = 'palmbed';
   else if (P.w >= 5 && P.d >= 5 && r < 0.88) type = 'sarchfree';
   else return false;
-  const size = type === 'pool' || type === 'basin' ? 3 : type === 'sarchfree' ? 1 : type === 'garch' ? 4 : 2;
-  const ci = at ? at[0] : Math.round((P.x0 + P.x1) / 2);
-  const cj = at ? at[1] : Math.round((P.z0 + P.z1) / 2);
-  const offsets = [[0, 0], [1, 0], [-1, 0], [0, 1], [0, -1], [1, 1], [-1, -1], [1, -1], [-1, 1]];
-  for (const [oi, oj] of offsets) {
-    const i0 = ci + oi - Math.floor(size / 2);
-    const j0 = cj + oj - Math.floor(size / 2);
+  // candidate centres, in cells
+  const cands = [];
+  let size;
+  const onAxis = axis && !at;
+  if (onAxis) {
+    const parity = Number.isInteger(axis.c) ? 0 : 1;
+    if (!PIECE_SIZE[type][parity]) type = parity === 0 ? (type === 'sarchfree' ? 'obelisk' : 'fountain') : type;
+    size = PIECE_SIZE[type][parity];
+    const { a0, a1 } = extents(P, axis.h);
+    const base = Math.round((a0 + a1) / 2 - size / 2) + size / 2;
+    for (const k of [0, 1, -1, 2, -2]) {
+      const [ci, cj] = cellAt(axis.h, base + k, axis.c);
+      cands.push([ci, cj]);
+    }
+  } else {
+    size = PIECE_SIZE[type][0] || PIECE_SIZE[type][1];
+    const ci = at ? at[0] : Math.round((P.x0 + P.x1) / 2);
+    const cj = at ? at[1] : Math.round((P.z0 + P.z1) / 2);
+    const offsets = [[0, 0], [1, 0], [-1, 0], [0, 1], [0, -1], [1, 1], [-1, -1], [1, -1], [-1, 1]];
+    for (const [oi, oj] of offsets) cands.push([ci + oi - Math.floor(size / 2) + size / 2, cj + oj - Math.floor(size / 2) + size / 2]);
+  }
+  // which way it faces: back down the axis, towards whoever comes in
+  const toward = onAxis ? (axis.h + 2) % 4 : Math.floor(rng() * 4);
+  const acrossX = onAxis ? axis.h % 2 === 1 : rng() < 0.5; // a passage through it runs along z
+  for (const [cx, cz] of cands) {
+    const i0 = cx - size / 2;
+    const j0 = cz - size / 2;
     const i1 = i0 + size;
     const j1 = j0 + size;
     if (i0 - 1 < P.x0 || j0 - 1 < P.z0 || i1 + 1 > P.x1 || j1 + 1 > P.z1) continue;
     if (regionUsed(ctx, i0, j0, i1, j1)) continue;
     if (regionUsed(ctx, i0 - 1, j0 - 1, i1 + 1, j1 + 1, true)) continue;
-    const x = ((i0 + i1) / 2) * CELL;
-    const z = ((j0 + j1) / 2) * CELL;
+    const x = cx * CELL;
+    const z = cz * CELL;
+    const took = { type, i0, j0, i1, j1, x, z };
     if (type === 'statue') {
-      const face = rng() < 0.5 ? (rng() < 0.5 ? 0 : Math.PI) : rng() < 0.5 ? Math.PI / 2 : -Math.PI / 2;
-      out.feats.push({ t: 'statue', x, z, y, rot: face, seed: rng() * 1e6 });
+      out.feats.push({ t: 'statue', x, z, y, rot: dirAngle(toward), seed: rng() * 1e6 });
       out.boxes.push([x - 1.05, z - 1.05, x + 1.05, z + 1.05, y]);
     } else if (type === 'obelisk') {
-      out.feats.push({ t: 'obelisk', x, z, y, h: 6 + rng() * 3, seed: rng() * 1e6 });
+      out.feats.push({ t: 'obelisk', x, z, y, h: 6 + rng() * 3, seed: toward });
       out.boxes.push([x - 0.75, z - 0.75, x + 0.75, z + 0.75, y]);
+    } else if (type === 'armillary') {
+      out.feats.push({ t: 'armillary', x, z, y, rot: dirAngle(toward) });
+      out.boxes.push([x - 0.9, z - 0.9, x + 0.9, z + 0.9, y]);
     } else if (type === 'pool') {
       out.feats.push({ t: 'pool', x, z, y, r: 2.4 });
       out.circles.push([x, z, 2.5, y]);
@@ -578,46 +540,96 @@ function centrePiece(ctx, P, y, forced = null, at = null) {
       out.feats.push({ t: 'fountain', x, z, y });
       out.circles.push([x, z, 1.45, y]);
     } else if (type === 'basin') {
-      // a long basin with a row of jets, laid along the plot
-      const alongX = P.w >= P.d;
+      // a long basin with a row of jets, laid along the axis (or the plot)
+      const alongX = onAxis ? axis.h % 2 === 0 : P.w >= P.d;
       out.feats.push({ t: 'basin', x, z, y, rot: alongX ? Math.PI / 2 : 0 });
       out.boxes.push(alongX ? [x - 2.75, z - 1.35, x + 2.75, z + 1.35, y] : [x - 1.35, z - 2.75, x + 1.35, z + 2.75, y]);
     } else if (type === 'palmbed') {
       out.feats.push({ t: 'palmbed', x, z, y, seed: rng() * 1e6 });
       out.boxes.push([x - 1.6, z - 1.6, x + 1.6, z + 1.6, y]);
     } else if (type === 'garch') {
-      const alongX = rng() < 0.5;
-      out.feats.push({ t: 'garch', x, z, y, rot: alongX ? 0 : Math.PI / 2, striped: rng() < 0.5 });
+      out.feats.push({ t: 'garch', x, z, y, rot: acrossX ? 0 : Math.PI / 2, striped: rng() < 0.5 });
       for (const sg of [-1, 1]) {
-        const ox = alongX ? sg * 2.05 : 0;
-        const oz = alongX ? 0 : sg * 2.05;
-        const hx = alongX ? 0.5 : 0.55;
-        const hz = alongX ? 0.55 : 0.5;
+        const ox = acrossX ? sg * 2.05 : 0;
+        const oz = acrossX ? 0 : sg * 2.05;
+        const hx = acrossX ? 0.5 : 0.55;
+        const hz = acrossX ? 0.55 : 0.5;
         out.boxes.push([x + ox - hx, z + oz - hz, x + ox + hx, z + oz + hz, y]);
       }
       mark(ctx, i0, j0, i1, j1, 2);
-      return true;
+      return took;
     } else if (type === 'sarchfree') {
-      // (at the spot just checked, i0 j0, not the plot's middle)
-      const alongX = rng() < 0.5;
-      const px = (i0 + 0.5) * CELL;
-      const pz = (j0 + 0.5) * CELL;
-      out.feats.push({ t: 'sarch', x: px, z: pz, y, rot: alongX ? 0 : Math.PI / 2, span: 2.2 });
-      for (const s of [-1, 1]) {
-        const ox = alongX ? s * 1.4 : 0;
-        const oz = alongX ? 0 : s * 1.4;
-        out.boxes.push([px + ox - 0.3, pz + oz - 0.3, px + ox + 0.3, pz + oz + 0.3, y]);
+      out.feats.push({ t: 'sarch', x, z, y, rot: acrossX ? 0 : Math.PI / 2, span: 2.2 });
+      for (const sg of [-1, 1]) {
+        const ox = acrossX ? sg * 1.4 : 0;
+        const oz = acrossX ? 0 : sg * 1.4;
+        out.boxes.push([x + ox - 0.3, z + oz - 0.3, x + ox + 0.3, z + oz + 0.3, y]);
       }
       // its piers stand in the neighbouring cells: keep props clear of them
       for (let j = j0 - 1; j <= j0 + 1; j++) for (let i = i0 - 1; i <= i0 + 1; i++) if (ctx.used[j * N + i] === 0) ctx.used[j * N + i] = 2;
-      return true;
+      return took;
     }
     mark(ctx, i0, j0, i1, j1, 3);
     // keep a clear ring around it
     for (let j = j0 - 1; j < j1 + 1; j++) for (let i = i0 - 1; i < i1 + 1; i++) if (ctx.used[j * N + i] === 0) ctx.used[j * N + i] = 2;
-    return true;
+    return took;
   }
   return false;
+}
+
+// What frames the ways into a plot, if anything: one kind per plot.
+function frameStyle(ctx, program) {
+  const r = ctx.rng();
+  switch (program) {
+    case 'summit':
+      return 'brazier';
+    case 'tier':
+      return r < 0.55 ? 'banner' : r < 0.8 ? 'brazier' : null;
+    case 'court':
+      return r < 0.35 ? 'lamp' : r < 0.6 ? 'cypress' : r < 0.72 ? 'urn' : null;
+    case 'parterre':
+      return r < 0.3 ? 'cypress' : r < 0.5 ? 'urn' : null;
+    case 'quay':
+    case 'bank':
+      return r < 0.45 ? 'lamp' : null;
+    case 'plaza':
+      return r < 0.17 ? 'lamp' : r < 0.27 ? 'brazier' : r < 0.37 ? 'banner' : r < 0.47 ? 'cypress' : r < 0.54 ? 'pitpalm' : r < 0.6 ? 'stele' : null;
+    default:
+      return null;
+  }
+}
+
+// A pergola along a wall run: columns out on the terrace carrying timber and a
+// vine, with a bench in every other bay. The cells under it stay walkable.
+function placePergola(ctx, P, run, d, y, doorAt) {
+  const { out, rng } = ctx;
+  // (and nothing standing just in front of it, or beside its ends)
+  const ok = run.every((e) => ctx.used[e.j * N + e.i] === 0 && !hasDeck(ctx, e.i, e.j) && !ctx.abut.has(e.j * N + e.i) && inside(P, e.i - DX[d], e.j - DZ[d]) && !besideProp(ctx, e.i, e.j) && !besideProp(ctx, e.i - DX[d], e.j - DZ[d]));
+  if (!ok) return false;
+  const a = run[0];
+  const b = run[run.length - 1];
+  const [ax, az] = edgeCentre(a.i, a.j, d);
+  const [bx, bz] = edgeCentre(b.i, b.j, d);
+  const out_ = (d + 2) % 4;
+  const len = run.length * CELL;
+  const mx = (ax + bx) / 2;
+  const mz = (az + bz) / 2;
+  out.feats.push({ t: 'pergola', x: mx, z: mz, y, rot: dirAngle(out_), len, seed: rng() * 1e6 });
+  // its columns, on the line 1.55 m out from the wall
+  const ux = Math.abs(DZ[d]);
+  const uz = Math.abs(DX[d]);
+  for (let k = 0; k <= run.length; k++) {
+    const t = Math.max(-len / 2 + 0.35, Math.min(len / 2 - 0.35, -len / 2 + k * CELL));
+    out.circles.push([mx + ux * t - DX[d] * 1.55, mz + uz * t - DZ[d] * 1.55, 0.28, y]);
+  }
+  run.forEach((e, k) => {
+    if (k % 2 === 1 && e.t !== doorAt && k < run.length - 1 && roomFor(ctx, P, [[e.i, e.j]])) {
+      const [cx, cz] = edgeCentre(e.i, e.j, d);
+      putProp(ctx, { kind: 'bench' }, cx - DX[d] * 0.45, cz - DZ[d] * 0.45, y, out_);
+      ctx.used[e.j * N + e.i] = 3;
+    } else ctx.used[e.j * N + e.i] = 2;
+  });
+  return true;
 }
 
 // The top of a ziggurat: a domed pavilion, the sun idol or an obelisk, with
@@ -641,14 +653,16 @@ function shrine(ctx, P, y, kind) {
     out.boxes.push([x - 0.75, z - 0.75, x + 0.75, z + 0.75, y]);
   }
   mark(ctx, ci - 1, cj - 1, ci + 1, cj + 1, 3);
-  // urns on the summit's corners
-  for (const [i, j] of [[P.x0, P.z0], [P.x1 - 1, P.z0], [P.x1 - 1, P.z1 - 1], [P.x0, P.z1 - 1]]) {
-    if (ctx.used[j * N + i] !== 0) continue;
-    const ux = (i + 0.5) * CELL + (i === P.x0 ? -0.3 : 0.3);
-    const uz = (j + 0.5) * CELL + (j === P.z0 ? -0.3 : 0.3);
-    out.feats.push({ t: 'urns', x: ux, z: uz, y, n: 1, seed: rng() * 1e6 });
-    out.circles.push([ux, uz, 0.45, y]);
-    ctx.used[j * N + i] = 3;
+  // braziers (or urns) on the summit's four corners
+  const spec = propSpec(ctx, rng() < 0.65 ? 'brazier' : 'urn');
+  const cs = [[P.x0, P.z0], [P.x1 - 1, P.z0], [P.x1 - 1, P.z1 - 1], [P.x0, P.z1 - 1]];
+  if (cs.every(([i, j]) => ctx.used[j * N + i] === 0)) {
+    for (const [i, j] of cs) {
+      const ux = (i + 0.5) * CELL + (i === P.x0 ? -0.3 : 0.3);
+      const uz = (j + 0.5) * CELL + (j === P.z0 ? -0.3 : 0.3);
+      putProp(ctx, spec, ux, uz, y, 1);
+      ctx.used[j * N + i] = 3;
+    }
   }
   // kneeling devotees facing it
   const n = 2 + Math.floor(rng() * 3);
@@ -701,19 +715,35 @@ function court(ctx, P, y, garden) {
   if (!placed) centrePiece(ctx, P, y, 'fountain');
 }
 
-// Quays: mooring posts along the water.
-function quay(ctx, P, y) {
-  const { out } = ctx;
+// Quays: mooring posts along the water, and lamps on the back row in a
+// rhythm counted from the block's edge, so the quays either side of a canal
+// (or the banks of a cascade) light it in step.
+function quay(ctx, P, y, program) {
+  const { out, S } = ctx;
   for (let d = 0; d < 4; d++) {
     const s = sideInfo(ctx, P, d);
     s.forEach((e, k) => {
-      if (e.rel !== 'water' || k % 3 !== 1 || e.u !== 0 || hasDeck(ctx, e.i, e.j)) return;
+      if (program !== 'quay' || e.rel !== 'water' || k % 3 !== 1 || e.u !== 0 || hasDeck(ctx, e.i, e.j)) return;
       const [cx, cz] = edgeCentre(e.i, e.j, d);
       const x = cx - DX[d] * 0.35;
       const z = cz - DZ[d] * 0.35;
       out.feats.push({ t: 'bollard', x, z, y });
       out.circles.push([x, z, 0.22, y]);
     });
+  }
+  const water = [0, 1, 2, 3].find((d) => sideInfo(ctx, P, d).some((e) => e.rel === 'water'));
+  if (water === undefined || !S.feature || (P.w < 2 && P.d < 2)) return;
+  const lamp = { kind: 'lamp' };
+  for (const e of sideCells(P, water)) {
+    const along = water % 2 === 0 ? e[1] : e[0];
+    if (along % 4 !== 2) continue;
+    const i = e[0] - DX[water];
+    const j = e[1] - DZ[water];
+    if (!inside(P, i, j)) continue;
+    const c = j * N + i;
+    if (S.kind[c] !== K_FLOOR || ctx.used[c] !== 0 || hasDeck(ctx, i, j) || hasDeck(ctx, e[0], e[1]) || !roomFor(ctx, P, [[i, j]])) continue;
+    putProp(ctx, lamp, (i + 0.5) * CELL + DX[water] * 0.3, (j + 0.5) * CELL + DZ[water] * 0.3, y, water);
+    claim(ctx, i, j);
   }
 }
 
@@ -889,6 +919,9 @@ function islet(ctx, P, ys, kind) {
   }
 }
 
+// Roofs. A flat roof carries a kiosk on each corner, a pair of wind catchers,
+// a garden of palms set out square, or a lone turret; a dome may get a kiosk
+// or a pinnacle on each corner of its parapet.
 function decorateBuilding(ctx, P) {
   const { rng, out } = ctx;
   const y = P.level * LEVEL_H;
@@ -896,23 +929,45 @@ function decorateBuilding(ctx, P) {
   const Z0 = P.z0 * CELL;
   const X1 = P.x1 * CELL;
   const Z1 = P.z1 * CELL;
+  const xm = (X0 + X1) / 2;
+  const zm = (Z0 + Z1) / 2;
+  const big = P.w >= 4 && P.d >= 4;
+  const kiosks = (inset) => {
+    for (const [x, z] of [[X0 + inset, Z0 + inset], [X1 - inset, Z0 + inset], [X1 - inset, Z1 - inset], [X0 + inset, Z1 - inset]]) out.feats.push({ t: 'chhatri', x, z, y });
+  };
   if (P.roof === 'flat') {
-    if (rng() < 0.5) {
-      const n = 1 + Math.floor(rng() * 3);
-      for (let k = 0; k < n; k++) {
-        const x = X0 + 1.5 + rng() * (X1 - X0 - 3);
-        const z = Z0 + 1.5 + rng() * (Z1 - Z0 - 3);
-        out.feats.push({ t: 'palm', x, z, y, pot: true, s: 0.8 + rng() * 0.5, seed: rng() * 1e6 });
+    const r = rng();
+    if (big && r < 0.3) kiosks(1.35);
+    else if (r < 0.55 && Math.max(P.w, P.d) >= 3) {
+      // wind catchers: a pair on the long axis, facing the same way
+      const alongX = P.w >= P.d;
+      const L = (alongX ? X1 - X0 : Z1 - Z0) / 2 - 1.3;
+      const tall = rng() < 0.5;
+      const pair = L >= 1.4;
+      for (const sg of pair ? [-1, 1] : [0]) {
+        out.feats.push({ t: 'windcatcher', x: xm + (alongX ? sg * L : 0), z: zm + (alongX ? 0 : sg * L), y, rot: alongX ? Math.PI / 2 : 0, tall });
       }
-    }
-    if (rng() < 0.35) {
+    } else if (r < 0.8) {
+      // palms in pots, set out square about the middle
+      const s = 0.8 + rng() * 0.3;
+      const seed = rng() * 1e6;
+      const ox = Math.min(2.2, (X1 - X0) / 2 - 1.2);
+      const oz = Math.min(2.2, (Z1 - Z0) / 2 - 1.2);
+      const spots = ox > 0.6 && oz > 0.6 ? [[-ox, -oz], [ox, -oz], [ox, oz], [-ox, oz]] : [[0, 0]];
+      for (const [dx, dz] of spots) out.feats.push({ t: 'palm', x: xm + dx, z: zm + dz, y, pot: true, s, seed });
+    } else {
       const cx = X0 + 1.4 + Math.floor(rng() * 2) * (X1 - X0 - 2.8);
       const cz = Z0 + 1.4 + Math.floor(rng() * 2) * (Z1 - Z0 - 2.8);
       out.feats.push({ t: 'turret', x: cx, z: cz, y, h: 2.5 + rng() * 3, r: 1.0 });
     }
-  } else if (P.roof === 'dome' && rng() < 0.55) {
-    // pinnacles on the corners of the parapet round the dome
-    for (const [x, z] of [[X0 + 0.55, Z0 + 0.55], [X1 - 0.55, Z0 + 0.55], [X1 - 0.55, Z1 - 0.55], [X0 + 0.55, Z1 - 0.55]]) out.feats.push({ t: 'pinnacle', x, z, y, h: 2.6 });
+  } else if (P.roof === 'dome') {
+    const r = rng();
+    // (only where the kiosks stand clear of the dome's swell, as it is sized
+    // in the mesher)
+    const R = Math.min(4, (Math.min(P.w, P.d) * CELL) / 2 - 1.1) * (1.52 / 1.45);
+    const clear = Math.hypot((X1 - X0) / 2 - 2.0, (Z1 - Z0) / 2 - 2.0) > R + 0.2;
+    if (clear && r < 0.4) kiosks(1.1);
+    else if (r < 0.8) for (const [x, z] of [[X0 + 0.55, Z0 + 0.55], [X1 - 0.55, Z0 + 0.55], [X1 - 0.55, Z1 - 0.55], [X0 + 0.55, Z1 - 0.55]]) out.feats.push({ t: 'pinnacle', x, z, y, h: 2.6 });
   } else if (P.roof === 'hip' && rng() < 0.3) {
     const cx = rng() < 0.5 ? X0 + 1.2 : X1 - 1.2;
     const cz = rng() < 0.5 ? Z0 + 1.2 : Z1 - 1.2;
@@ -996,22 +1051,6 @@ function rill(ctx, P, y, sides) {
   for (const [i, j] of cells) ctx.used[j * N + i] = 3;
   ctx.quiet.add(e.j * N + e.i);
   return true;
-}
-
-// Axis-aligned box of a rectangle given in a frame at (ox, oz) whose +z runs
-// along direction r and +x across it.
-function localBox(ox, oz, r, x0, z0, x1, z1, y) {
-  const fx = DX[r];
-  const fz = DZ[r];
-  const sx = DZ[r];
-  const sz = -DX[r];
-  const xs = [];
-  const zs = [];
-  for (const [a, b] of [[x0, z0], [x1, z0], [x1, z1], [x0, z1]]) {
-    xs.push(ox + sx * a + fx * b);
-    zs.push(oz + sz * a + fz * b);
-  }
-  return [Math.min(...xs), Math.min(...zs), Math.max(...xs), Math.max(...zs), y];
 }
 
 // Along a wall rising from a terrace: now and then a carved relief across two
