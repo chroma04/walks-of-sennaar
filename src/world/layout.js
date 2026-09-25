@@ -9,8 +9,8 @@
 //
 // Blocks belong to districts: slow noise fields set how broad the plots are and
 // how steep the ground is. Some blocks are built around a set piece (a stepped
-// ziggurat, a sunken court, a canal with quays) that is carved out first; the
-// rest of the block is cut by BSP around it.
+// ziggurat, a sunken court, a canal with quays, a cascade of reaches and weirs)
+// that is carved out first; the rest of the block is cut by BSP around it.
 //
 // Connectivity guarantee: every block edge carries a "gate" cell whose level is a
 // pure function of that edge, so both blocks agree on it. Within a block, the
@@ -70,7 +70,7 @@ function rawProgram(seed, bx, bz) {
   const civic = valueNoise(seed ^ 0xc1c1, bx / 2.6, bz / 2.6);
   if (hashFloat(seed ^ 0x9e01, bx, bz) > 0.3 + 0.3 * civic) return 'terraces';
   const flavour = valueNoise(seed ^ 0xf1a7, bx / 5.5, bz / 5.5) + (hashFloat(seed ^ 0x9e02, bx, bz) - 0.5) * 0.9;
-  if (flavour < -0.18) return 'canal';
+  if (flavour < -0.18) return hashFloat(seed ^ 0x9e03, bx, bz) < 0.5 ? 'cascade' : 'canal';
   if (flavour > 0.18) return 'ziggurat';
   return 'court';
 }
@@ -290,6 +290,33 @@ function carveCanal(rng) {
   return { kind: 'canal', F: R(a0, c0, a0 + L, c0 + W, {}), rects, alongX, depth: 2 };
 }
 
+// A stepped water channel: two or three reaches, each a level below the last,
+// with a weir between them and banks that step down beside the water.
+function carveCascade(rng) {
+  const alongX = rng() < 0.5;
+  const K = rng() < 0.7 ? 3 : 2;
+  const Ls = K === 3 ? 6 + Math.floor(rng() * 3) : 8 + Math.floor(rng() * 3);
+  const L = K * Ls;
+  const water = 2 + (rng() < 0.3 ? 1 : 0);
+  const W = water + 4;
+  const a0 = centreStart(L, rng);
+  const c0 = centreStart(W, rng);
+  const flip = rng() < 0.5; // the water runs towards -axis
+  const down = alongX ? (flip ? 2 : 0) : flip ? 3 : 1;
+  const R = (a, c, a1, c1, extra) => (alongX ? { x0: a, z0: c, x1: a1, z1: c1, ...extra } : { x0: c, z0: a, x1: c1, z1: a1, ...extra });
+  const rects = [];
+  for (let s = 0; s < K; s++) {
+    const step = flip ? K - 1 - s : s;
+    const s0 = a0 + s * Ls;
+    const s1 = s0 + Ls;
+    const common = { step, steps: K, down };
+    rects.push(R(s0, c0, s1, c0 + 2, { role: 'bank', side: 0, outer: c0, ...common }));
+    rects.push(R(s0, c0 + 2, s1, c0 + 2 + water, { role: 'water', ...common }));
+    rects.push(R(s0, c0 + 2 + water, s1, c0 + W, { role: 'bank', side: 1, outer: c0 + W - 1, ...common }));
+  }
+  return { kind: 'cascade', F: R(a0, c0, a0 + L, c0 + W, {}), rects, alongX, steps: K, down, sluice: rng() < 0.65 };
+}
+
 // ---------------------------------------------------------------------------
 
 export function generateStructure(seed, bx, bz) {
@@ -312,6 +339,7 @@ function build(seed, bx, bz, A, gates, D, program) {
   if (program === 'ziggurat') feat = carveZiggurat(rng);
   else if (program === 'court') feat = carveCourt(rng, D.relief);
   else if (program === 'canal') feat = carveCanal(rng);
+  else if (program === 'cascade') feat = carveCascade(rng);
   if (feat) {
     const F = feat.F;
     bsp(rng, 0, 0, N, F.z0, rects, G);
@@ -469,7 +497,9 @@ function build(seed, bx, bz, A, gates, D, program) {
     const area = p.w * p.d;
     p.tower = area <= 20 && rng() < 0.6;
     p.level = top + 1 + (p.tower ? 1 + Math.floor(rng() * (2 + D.relief * 1.5)) : rng() < 0.3 + 0.3 * D.relief ? 1 : 0);
-    p.roof = p.tower ? 'pyramid' : rng() < 0.45 ? 'hip' : 'flat';
+    const r = rng();
+    if (p.tower) p.roof = r < 0.4 ? 'minaret' : 'pyramid';
+    else p.roof = r < 0.4 ? 'hip' : r < 0.58 && Math.abs(p.w - p.d) <= 2 ? 'dome' : 'flat';
   }
 
   // 7. extra loops between terraces
@@ -528,6 +558,7 @@ function build(seed, bx, bz, A, gates, D, program) {
   // 11. bridges over whatever lies deep enough below
   let want = 0;
   if (feat && feat.kind === 'canal') want = 2 + (rng() < 0.45 ? 1 : 0);
+  else if (feat && feat.kind === 'cascade') want = 1 + (rng() < 0.45 ? 1 : 0);
   else if (feat && feat.kind === 'court') want = 1 + (rng() < 0.3 ? 1 : 0);
   else if (rng() < 0.3 + 0.5 * D.relief) want = 1 + (rng() < 0.35 ? 1 : 0);
   if (want) placeBridges(ctx, want, feat);
@@ -539,7 +570,7 @@ function build(seed, bx, bz, A, gates, D, program) {
     anchor: A,
     program: feat ? feat.kind : 'terraces',
     district: D,
-    feature: feat ? { kind: feat.kind, F: feat.F, shrine: feat.shrine, colonnade: feat.colonnade, garden: feat.garden, alongX: feat.alongX, axes: feat.axes } : null,
+    feature: feat ? { kind: feat.kind, F: feat.F, shrine: feat.shrine, colonnade: feat.colonnade, garden: feat.garden, alongX: feat.alongX, axes: feat.axes, steps: feat.steps, down: feat.down, sluice: feat.sluice } : null,
     gates,
     plots: plots.map(({ adj, ...p }) => ({ ...p, adj: adj.map((e) => ({ q: e.q.id, dir: e.dir, lo: e.lo, hi: e.hi, line: e.line })) })),
     plotId,
@@ -616,6 +647,15 @@ function programLevels(feat, plots, plotId, link, axial, rng) {
   } else if (feat.kind === 'canal') {
     for (const p of fp) p.level = ring - feat.depth;
     for (const p of fp) if (p.role === 'quay') joinRing(p, 1 + (rng() < 0.5 ? 1 : 0));
+  } else if (feat.kind === 'cascade') {
+    for (const p of fp) p.level = ring - 1 - p.step;
+    const banks = fp.filter((p) => p.role === 'bank');
+    for (const p of banks) {
+      // a narrow flight down to the next reach, against the outer wall
+      const next = banks.find((q) => q.side === p.side && q.step === p.step + 1);
+      if (next) axial.push({ low: next, high: p, b0: p.outer, w: 1 });
+    }
+    for (const p of banks) if (p.step === 0 || p.step === feat.steps - 1 || rng() < 0.5) joinRing(p, 1);
   }
 }
 
@@ -740,6 +780,11 @@ function placeBridges(ctx, want, feat) {
             const u = (pos + 0.5 - lo) / (hi - lo);
             if (pos - lo < 3 || hi - 1 - pos < 3) score -= 2.5;
             if (feat.kind === 'canal') score -= Math.min(Math.abs(u - 0.5), Math.abs(u - 0.2), Math.abs(u - 0.8)) * 4;
+            else if (feat.kind === 'cascade') {
+              // over the middle of a reach, never over a weir
+              const r = u * feat.steps;
+              score -= Math.abs((r % 1) - 0.5) * 4;
+            }
             else score -= Math.abs(u - 0.5) * 3;
           }
         }

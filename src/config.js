@@ -37,8 +37,10 @@ export const M = {
   TRUNK: 14,
   CREAM: 15,
   GLYPH: 16,
+  FOAM: 17, // broken white glitter along water edges
+  FALL: 18, // falling water sheets over weirs
 };
-export const MATERIAL_COUNT = 17;
+export const MATERIAL_COUNT = 19;
 
 const hex = (h) => [((h >> 16) & 255) / 255, ((h >> 8) & 255) / 255, (h & 255) / 255];
 
@@ -62,6 +64,8 @@ export const PALETTE = [
   [hex(0x4b9e84), hex(0x2a6558)], // TRUNK
   [hex(0xfcefb0), hex(0xf0b857)], // CREAM
   [hex(0xb8462c), hex(0x8a2f22)], // GLYPH
+  [hex(0xffffff), hex(0xeafff8)], // FOAM
+  [hex(0xeafff7), hex(0x8fe3cf)], // FALL
 ];
 export const WALL_LIT = hex(0xf7c850);
 export const WALL_SHADE = hex(0xe58a3a);
