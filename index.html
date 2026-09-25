@@ -1,0 +1,76 @@
+<!doctype html>
+<html lang="en">
+  <head>
+    <meta charset="utf-8" />
+    <meta name="viewport" content="width=device-width, initial-scale=1, viewport-fit=cover" />
+    <meta name="theme-color" content="#d8406a" />
+    <title>Walks of Sennaar</title>
+    <meta name="description" content="An endless, procedurally generated walk through the sunlit terraces of the Devotees, in the style of Chants of Sennaar." />
+    <link rel="preconnect" href="https://fonts.googleapis.com" />
+    <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin />
+    <link rel="stylesheet" href="https://fonts.googleapis.com/css2?family=Jost:ital,wght@0,400;0,600;0,800;1,400&display=swap" />
+    <link rel="icon" href="data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 32 32'%3E%3Crect width='32' height='32' rx='8' fill='%23111'/%3E%3Cpath d='M9 25V14a7 7 0 0 1 14 0v11' fill='none' stroke='%23fbe54f' stroke-width='3'/%3E%3C/svg%3E" />
+  </head>
+  <body>
+    <canvas id="view" aria-label="Walks of Sennaar – 3D view"></canvas>
+
+    <section id="title" aria-live="polite">
+      <div class="card">
+        <svg class="glyphs" viewBox="0 0 220 28" aria-hidden="true">
+          <g fill="none" stroke="currentColor" stroke-width="3" stroke-linecap="square">
+            <path d="M6 24V6h12M12 6v12" />
+            <path d="M34 24c0-10 4-18 10-18s10 8 10 18M44 6v8" />
+            <path d="M70 6h14M77 6v18M70 24h14" />
+            <path d="M100 24V12a8 8 0 0 1 16 0v12M108 20v4" />
+            <path d="M132 6l10 18 10-18M142 6v6" />
+            <path d="M168 24V6l14 9-14 9" />
+            <path d="M198 6h14v18h-14M205 12v6" />
+          </g>
+        </svg>
+        <h1>Walks of Sennaar</h1>
+        <p class="sub">The terraces of the Devotees, without end.</p>
+        <button id="begin" class="pill" disabled>Begin</button>
+        <p id="status" class="status">Raising the terraces…</p>
+        <p class="keys only-fine">
+          <span><b>WASD</b> or <b>click</b> to walk</span>
+          <span><b>Shift</b> / double-click to run</span>
+          <span><b>Q</b> <b>E</b> or right-drag to turn</span>
+          <span><b>Wheel</b> to zoom</span>
+        </p>
+        <p class="keys only-touch">
+          <span><b>Tap</b> to walk</span>
+          <span><b>Double-tap</b> to run</span>
+          <span><b>Hold</b> to wander</span>
+          <span><b>Two fingers</b> turn &amp; zoom</span>
+        </p>
+      </div>
+    </section>
+
+    <div id="hud" class="gone">
+      <div class="corner">
+        <button id="sound" class="round" aria-label="Sound" aria-pressed="true" title="Sound (M)">
+          <svg viewBox="0 0 24 24" aria-hidden="true"><path class="spk" d="M4 9h4l5-4v14l-5-4H4z" /><path class="waves" d="M16 8.5a5 5 0 0 1 0 7M18.5 6a8.5 8.5 0 0 1 0 12" /><path class="mute" d="M16 9l6 6M22 9l-6 6" /></svg>
+        </button>
+        <button id="help" class="round" aria-label="Controls" title="Controls (?)">
+          <svg viewBox="0 0 24 24" aria-hidden="true"><path d="M9 9a3 3 0 1 1 4.5 2.6c-1 .6-1.5 1.2-1.5 2.4" /><circle cx="12" cy="18" r="1.2" /></svg>
+        </button>
+      </div>
+      <div id="help-panel" class="panel">
+        <h2>Walking</h2>
+        <ul>
+          <li><b>WASD</b> / arrows — walk · <b>Shift</b> — run</li>
+          <li><b>Click</b> / tap — walk there · <b>double-click</b> — run there</li>
+          <li><b>Hold</b> the button or a finger — walk towards the pointer</li>
+          <li><b>Q</b> / <b>E</b>, right-drag, two-finger twist — turn the view</li>
+          <li><b>Wheel</b>, pinch, <b>+</b> / <b>−</b> — zoom</li>
+          <li><b>M</b> — sound · <b>H</b> — hide the interface</li>
+          <li>Gamepad: left stick, right stick, bumpers, triggers</li>
+        </ul>
+        <p class="seedline">World <b id="seed"></b> · <button id="new-world" class="link">walk a different world</button></p>
+      </div>
+      <p id="hint" class="pill small"><span class="only-fine">Click anywhere to walk · WASD · Q/E to turn</span><span class="only-touch">Tap to walk · two fingers to turn</span></p>
+    </div>
+
+    <script type="module" src="/src/main.js"></script>
+  </body>
+</html>

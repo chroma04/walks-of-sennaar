@@ -1,0 +1,19 @@
+{
+  "name": "walks-of-sennaar",
+  "private": true,
+  "version": "0.1.0",
+  "type": "module",
+  "scripts": {
+    "dev": "vite",
+    "build": "vite build",
+    "preview": "vite preview",
+    "test": "node tools/connectivity.mjs 8 2 0 0 && node tools/connectivity.mjs 777 2 10 -4 && node tools/walksim.mjs 8 20"
+  },
+  "dependencies": {
+    "three": "^0.186.0"
+  },
+  "devDependencies": {
+    "vite": "^8.3.0"
+  },
+  "description": "An endless, procedurally generated walk through the terraces of the Devotees, in the style of Chants of Sennaar."
+}
